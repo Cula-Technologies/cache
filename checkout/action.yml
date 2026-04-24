@@ -18,8 +18,9 @@ inputs:
     required: false
     default: ''
   gcs-bucket:
-    description: 'GCS bucket holding the cached working trees.'
-    required: true
+    description: 'GCS bucket holding the cached working trees. When empty, cache is bypassed and this step is a plain actions/checkout.'
+    required: false
+    default: 'cula-warpbuild-ci-cache-ew1'
   gcs-path-prefix:
     description: 'Path prefix inside the bucket.'
     required: false
@@ -33,7 +34,7 @@ runs:
   steps:
     - name: Restore working tree from GCS
       id: restore
-      if: inputs.sparse-checkout == ''
+      if: inputs.sparse-checkout == '' && inputs.gcs-bucket != ''
       uses: Cula-Technologies/cache/restore@v1
       with:
         path: .
@@ -51,7 +52,7 @@ runs:
         ref: ${{ inputs.ref }}
 
     - name: Strip credentials before caching
-      if: inputs.sparse-checkout == '' && steps.restore.outputs.cache-hit != 'true'
+      if: inputs.sparse-checkout == '' && inputs.gcs-bucket != '' && steps.restore.outputs.cache-hit != 'true'
       shell: bash
       run: |
         # actions/checkout writes a token-bearing extraheader into .git/config; remove it
@@ -59,7 +60,7 @@ runs:
         git -C "${GITHUB_WORKSPACE}" config --local --unset-all http.https://github.com/.extraheader || true
 
     - name: Save working tree to GCS
-      if: inputs.sparse-checkout == '' && steps.restore.outputs.cache-hit != 'true'
+      if: inputs.sparse-checkout == '' && inputs.gcs-bucket != '' && steps.restore.outputs.cache-hit != 'true'
       uses: Cula-Technologies/cache/save@v1
       with:
         path: .
