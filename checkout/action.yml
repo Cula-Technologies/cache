@@ -1,0 +1,62 @@
+name: 'Checkout (GCS-cached)'
+description: "Restore the repo working tree from GCS keyed on commit SHA, falling back to actions/checkout on miss. Designed to be the first step of a job."
+inputs:
+  fetch-depth:
+    description: 'Number of commits to fetch on cache miss. 0 = full history.'
+    required: false
+    default: '1'
+  filter:
+    description: 'Partial clone filter (e.g. blob:none). Empty = full clone.'
+    required: false
+    default: ''
+  ref:
+    description: 'Branch, tag or SHA to check out on cache miss. Defaults to the workflow ref.'
+    required: false
+    default: ''
+  gcs-bucket:
+    description: 'GCS bucket holding the cached working trees.'
+    required: true
+  gcs-path-prefix:
+    description: 'Path prefix inside the bucket.'
+    required: false
+    default: 'github-checkout'
+outputs:
+  cache-hit:
+    description: 'true when the working tree was restored from GCS.'
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Restore working tree from GCS
+      id: restore
+      uses: Cula-Technologies/cache/restore@v1
+      with:
+        path: .
+        key: repo-${{ github.sha }}-depth-${{ inputs.fetch-depth }}-filter-${{ inputs.filter || 'none' }}
+        gcs-bucket: ${{ inputs.gcs-bucket }}
+        gcs-path-prefix: ${{ inputs.gcs-path-prefix }}
+
+    - name: Fresh checkout (cache miss)
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      with:
+        fetch-depth: ${{ inputs.fetch-depth }}
+        filter: ${{ inputs.filter }}
+        ref: ${{ inputs.ref }}
+
+    - name: Strip credentials before caching
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        # actions/checkout writes a token-bearing extraheader into .git/config; remove it
+        # so the cached tarball doesn't carry credentials across jobs.
+        git -C "${GITHUB_WORKSPACE}" config --local --unset-all http.https://github.com/.extraheader || true
+
+    - name: Save working tree to GCS
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: Cula-Technologies/cache/save@v1
+      with:
+        path: .
+        key: repo-${{ github.sha }}-depth-${{ inputs.fetch-depth }}-filter-${{ inputs.filter || 'none' }}
+        gcs-bucket: ${{ inputs.gcs-bucket }}
+        gcs-path-prefix: ${{ inputs.gcs-path-prefix }}
