@@ -1,22 +1,6 @@
 name: 'Checkout (GCS-cached)'
-description: "Restore the repo working tree from GCS keyed on commit SHA, falling back to actions/checkout on miss. Designed to be the first step of a job."
+description: "Restore the repo working tree from GCS keyed on commit SHA, falling back to actions/checkout on miss. Always populates with full history + blob:none so every downstream job in the same run gets the same tarball regardless of its stated depth/filter needs."
 inputs:
-  fetch-depth:
-    description: 'Number of commits to fetch on cache miss. 0 = full history.'
-    required: false
-    default: '1'
-  filter:
-    description: 'Partial clone filter (e.g. blob:none). Empty = full clone.'
-    required: false
-    default: ''
-  sparse-checkout:
-    description: 'Newline-separated sparse-checkout patterns. When set, the GCS cache is bypassed entirely and the step is a plain actions/checkout — avoids polluting the full-tree cache with sparse trees.'
-    required: false
-    default: ''
-  sparse-checkout-cone-mode:
-    description: 'Whether sparse-checkout patterns are cone-mode (true) or full patterns (false). Required as "false" when patterns include files, not just directories.'
-    required: false
-    default: 'true'
   ref:
     description: 'Branch, tag or SHA to check out on cache miss. Defaults to the workflow ref.'
     required: false
@@ -38,26 +22,24 @@ runs:
   steps:
     - name: Restore working tree from GCS
       id: restore
-      if: inputs.sparse-checkout == '' && inputs.gcs-bucket != ''
+      if: inputs.gcs-bucket != ''
       uses: Cula-Technologies/cache/restore@v1
       with:
         path: .
-        key: repo-${{ github.sha }}-depth-${{ inputs.fetch-depth }}-filter-${{ inputs.filter || 'none' }}
+        key: repo-${{ github.sha }}
         gcs-bucket: ${{ inputs.gcs-bucket }}
         gcs-path-prefix: ${{ inputs.gcs-path-prefix }}
 
-    - name: Fresh checkout (cache miss or sparse)
-      if: inputs.sparse-checkout != '' || steps.restore.outputs.cache-hit != 'true'
+    - name: Fresh checkout (cache miss)
+      if: steps.restore.outputs.cache-hit != 'true'
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       with:
-        fetch-depth: ${{ inputs.fetch-depth }}
-        filter: ${{ inputs.filter }}
-        sparse-checkout: ${{ inputs.sparse-checkout }}
-        sparse-checkout-cone-mode: ${{ inputs.sparse-checkout-cone-mode }}
+        fetch-depth: 0
+        filter: blob:none
         ref: ${{ inputs.ref }}
 
     - name: Strip credentials before caching
-      if: inputs.sparse-checkout == '' && inputs.gcs-bucket != '' && steps.restore.outputs.cache-hit != 'true'
+      if: inputs.gcs-bucket != '' && steps.restore.outputs.cache-hit != 'true'
       shell: sh
       run: |
         # actions/checkout writes a token-bearing extraheader into .git/config; remove it
@@ -66,10 +48,10 @@ runs:
         git -C "${GITHUB_WORKSPACE}" config --local --unset-all http.https://github.com/.extraheader || true
 
     - name: Save working tree to GCS
-      if: inputs.sparse-checkout == '' && inputs.gcs-bucket != '' && steps.restore.outputs.cache-hit != 'true'
+      if: inputs.gcs-bucket != '' && steps.restore.outputs.cache-hit != 'true'
       uses: Cula-Technologies/cache/save@v1
       with:
         path: .
-        key: repo-${{ github.sha }}-depth-${{ inputs.fetch-depth }}-filter-${{ inputs.filter || 'none' }}
+        key: repo-${{ github.sha }}
         gcs-bucket: ${{ inputs.gcs-bucket }}
         gcs-path-prefix: ${{ inputs.gcs-path-prefix }}
