@@ -53,10 +53,11 @@ runs:
 
     - name: Strip credentials before caching
       if: inputs.sparse-checkout == '' && inputs.gcs-bucket != '' && steps.restore.outputs.cache-hit != 'true'
-      shell: bash
+      shell: sh
       run: |
         # actions/checkout writes a token-bearing extraheader into .git/config; remove it
-        # so the cached tarball doesn't carry credentials across jobs.
+        # so the cached tarball doesn't carry credentials across jobs. Use sh instead of
+        # bash so the step works in minimal container images (e.g. jest-runtime).
         git -C "${GITHUB_WORKSPACE}" config --local --unset-all http.https://github.com/.extraheader || true
 
     - name: Save working tree to GCS
