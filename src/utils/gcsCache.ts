@@ -128,7 +128,7 @@ async function restoreFromGCS(
     );
 
     const keys = [primaryKey, ...restoreKeys];
-    const gcsPath = await findFileOnGCS(
+    const match = await findFileOnGCS(
         storage,
         bucket,
         pathPrefix,
@@ -136,15 +136,22 @@ async function restoreFromGCS(
         compressionMethod
     );
 
-    if (!gcsPath) {
+    if (!match) {
         core.info(`No matching cache found`);
         return undefined;
     }
 
+    // Preserve the @actions/cache contract: return the matched cache KEY
+    // (primaryKey or a restoreKey), not the GCS object path. The caller
+    // (restoreImpl) compares the return value against primaryKey to set the
+    // `cache-hit` output — returning the gcs path makes `cache-hit` always
+    // false, re-triggering downstream install/build steps that gate on it.
+    const { key: matchedKey, path: gcsPath } = match;
+
     // If lookup only, just return the key
     if (options?.lookupOnly) {
-        core.info(`Cache found in GCS with key: ${gcsPath}`);
-        return gcsPath;
+        core.info(`Cache found in GCS with key: ${matchedKey}`);
+        return matchedKey;
     }
 
     try {
@@ -166,7 +173,7 @@ async function restoreFromGCS(
         await extractTar(archivePath, compressionMethod);
         core.info("Cache restored successfully");
 
-        return gcsPath;
+        return matchedKey;
     } catch (error) {
         core.warning(`Failed to restore: ${(error as Error).message}`);
     } finally {
@@ -254,12 +261,12 @@ async function findFileOnGCS(
     pathPrefix: string,
     keys: string[],
     compressionMethod: CompressionMethod
-): Promise<string | undefined> {
+): Promise<{ key: string; path: string } | undefined> {
     for (const key of keys) {
         const gcsPath = getGCSPath(pathPrefix, key, compressionMethod);
         if (await checkFileExists(storage, bucket, gcsPath)) {
             core.info(`Found file on bucket: ${bucket} with key: ${gcsPath}`);
-            return gcsPath;
+            return { key, path: gcsPath };
         }
     }
     return undefined;
