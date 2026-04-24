@@ -9,6 +9,10 @@ inputs:
     description: 'Partial clone filter (e.g. blob:none). Empty = full clone.'
     required: false
     default: ''
+  sparse-checkout:
+    description: 'Newline-separated sparse-checkout patterns. When set, the GCS cache is bypassed entirely and the step is a plain actions/checkout — avoids polluting the full-tree cache with sparse trees.'
+    required: false
+    default: ''
   ref:
     description: 'Branch, tag or SHA to check out on cache miss. Defaults to the workflow ref.'
     required: false
@@ -29,6 +33,7 @@ runs:
   steps:
     - name: Restore working tree from GCS
       id: restore
+      if: inputs.sparse-checkout == ''
       uses: Cula-Technologies/cache/restore@v1
       with:
         path: .
@@ -36,16 +41,17 @@ runs:
         gcs-bucket: ${{ inputs.gcs-bucket }}
         gcs-path-prefix: ${{ inputs.gcs-path-prefix }}
 
-    - name: Fresh checkout (cache miss)
-      if: steps.restore.outputs.cache-hit != 'true'
+    - name: Fresh checkout (cache miss or sparse)
+      if: inputs.sparse-checkout != '' || steps.restore.outputs.cache-hit != 'true'
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       with:
         fetch-depth: ${{ inputs.fetch-depth }}
         filter: ${{ inputs.filter }}
+        sparse-checkout: ${{ inputs.sparse-checkout }}
         ref: ${{ inputs.ref }}
 
     - name: Strip credentials before caching
-      if: steps.restore.outputs.cache-hit != 'true'
+      if: inputs.sparse-checkout == '' && steps.restore.outputs.cache-hit != 'true'
       shell: bash
       run: |
         # actions/checkout writes a token-bearing extraheader into .git/config; remove it
@@ -53,7 +59,7 @@ runs:
         git -C "${GITHUB_WORKSPACE}" config --local --unset-all http.https://github.com/.extraheader || true
 
     - name: Save working tree to GCS
-      if: steps.restore.outputs.cache-hit != 'true'
+      if: inputs.sparse-checkout == '' && steps.restore.outputs.cache-hit != 'true'
       uses: Cula-Technologies/cache/save@v1
       with:
         path: .
