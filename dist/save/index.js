@@ -78038,7 +78038,8 @@ var Inputs;
     Inputs["GCSBucket"] = "gcs-bucket";
     Inputs["GCSPathPrefix"] = "gcs-path-prefix";
     Inputs["WIFProvider"] = "wif-provider";
-    Inputs["ServiceAccount"] = "service-account"; // Input for cache, restore, save action
+    Inputs["ServiceAccount"] = "service-account";
+    Inputs["FallbackToGitHub"] = "fallback-to-github"; // Input for cache, save action
 })(Inputs || (exports.Inputs = Inputs = {}));
 var Outputs;
 (function (Outputs) {
@@ -78185,7 +78186,18 @@ function saveImpl(stateProvider) {
                 return;
             }
             const enableCrossOsArchive = utils.getInputAsBool(constants_1.Inputs.EnableCrossOsArchive);
-            cacheId = yield cache.saveCache(cachePaths, primaryKey, { uploadChunkSize: utils.getInputAsInt(constants_1.Inputs.UploadChunkSize) }, enableCrossOsArchive, !backfillGCS);
+            // A caller targeting one specific bucket may not want the GitHub
+            // cache as a consolation prize. Writing there on failure reports
+            // success from the wrong destination, and lands the entry under a key
+            // that later restores will serve from GitHub — so GCS never gets it,
+            // which is the failure backfillGCS exists to undo.
+            //
+            // Defaults to true: for a repo with no GCS configured, behaving like
+            // actions/cache is the whole point of the fallback.
+            const fallbackToGitHub = core.getInput(constants_1.Inputs.FallbackToGitHub) === ""
+                ? true
+                : utils.getInputAsBool(constants_1.Inputs.FallbackToGitHub);
+            cacheId = yield cache.saveCache(cachePaths, primaryKey, { uploadChunkSize: utils.getInputAsInt(constants_1.Inputs.UploadChunkSize) }, enableCrossOsArchive, fallbackToGitHub && !backfillGCS);
             if (cacheId != -1) {
                 core.info(`Cache saved with key: ${primaryKey}`);
             }

@@ -78038,7 +78038,8 @@ var Inputs;
     Inputs["GCSBucket"] = "gcs-bucket";
     Inputs["GCSPathPrefix"] = "gcs-path-prefix";
     Inputs["WIFProvider"] = "wif-provider";
-    Inputs["ServiceAccount"] = "service-account"; // Input for cache, restore, save action
+    Inputs["ServiceAccount"] = "service-account";
+    Inputs["FallbackToGitHub"] = "fallback-to-github"; // Input for cache, save action
 })(Inputs || (exports.Inputs = Inputs = {}));
 var Outputs;
 (function (Outputs) {

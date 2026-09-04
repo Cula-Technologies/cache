@@ -427,3 +427,47 @@ test("save with empty path input uses the paths recorded by restore", async () =
         false
     );
 });
+
+describe("fallback-to-github", () => {
+    const primaryKey = "Linux-node-bb828da54c148048dd17899ba9fda624811cfb43";
+
+    function arrange(): jest.SpyInstance {
+        // No restored key: a miss, so the save actually runs.
+        mockState({ CACHE_KEY: primaryKey, CACHE_RESULT: "" });
+        testUtils.setInput(Inputs.Path, "node_modules");
+        return jest.spyOn(gcsCache, "saveCache").mockResolvedValue(1);
+    }
+
+    test("defaults to true when the input is absent", async () => {
+        const saveMock = arrange();
+
+        await saveImpl(new StateProvider());
+
+        // The guard that matters: core.getInput returns "" for an absent
+        // input, and getInputAsBool("") is false — so without the explicit
+        // default this would silently stop falling back for every existing
+        // caller.
+        expect(saveMock).toHaveBeenCalledWith(
+            ["node_modules"],
+            primaryKey,
+            expect.anything(),
+            expect.anything(),
+            true
+        );
+    });
+
+    test("passes false through so a targeted save cannot land elsewhere", async () => {
+        const saveMock = arrange();
+        testUtils.setInput(Inputs.FallbackToGitHub, "false");
+
+        await saveImpl(new StateProvider());
+
+        expect(saveMock).toHaveBeenCalledWith(
+            ["node_modules"],
+            primaryKey,
+            expect.anything(),
+            expect.anything(),
+            false
+        );
+    });
+});

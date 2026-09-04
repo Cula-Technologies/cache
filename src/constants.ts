@@ -9,7 +9,8 @@ export enum Inputs {
     GCSBucket = "gcs-bucket", // Input for cache, restore, save action
     GCSPathPrefix = "gcs-path-prefix", // Input for cache, restore, save action
     WIFProvider = "wif-provider", // Input for cache, restore, save action
-    ServiceAccount = "service-account" // Input for cache, restore, save action
+    ServiceAccount = "service-account", // Input for cache, restore, save action
+    FallbackToGitHub = "fallback-to-github" // Input for cache, save action
 }
 
 export enum Outputs {
