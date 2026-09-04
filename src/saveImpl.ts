@@ -86,12 +86,25 @@ export async function saveImpl(
             Inputs.EnableCrossOsArchive
         );
 
+        // A caller targeting one specific bucket may not want the GitHub
+        // cache as a consolation prize. Writing there on failure reports
+        // success from the wrong destination, and lands the entry under a key
+        // that later restores will serve from GitHub — so GCS never gets it,
+        // which is the failure backfillGCS exists to undo.
+        //
+        // Defaults to true: for a repo with no GCS configured, behaving like
+        // actions/cache is the whole point of the fallback.
+        const fallbackToGitHub =
+            core.getInput(Inputs.FallbackToGitHub) === ""
+                ? true
+                : utils.getInputAsBool(Inputs.FallbackToGitHub);
+
         cacheId = await cache.saveCache(
             cachePaths,
             primaryKey,
             { uploadChunkSize: utils.getInputAsInt(Inputs.UploadChunkSize) },
             enableCrossOsArchive,
-            !backfillGCS
+            fallbackToGitHub && !backfillGCS
         );
 
         if (cacheId != -1) {

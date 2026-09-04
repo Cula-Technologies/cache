@@ -7,7 +7,10 @@ export enum Inputs {
     FailOnCacheMiss = "fail-on-cache-miss", // Input for cache, restore action
     LookupOnly = "lookup-only", // Input for cache, restore action
     GCSBucket = "gcs-bucket", // Input for cache, restore, save action
-    GCSPathPrefix = "gcs-path-prefix" // Input for cache, restore, save action
+    GCSPathPrefix = "gcs-path-prefix", // Input for cache, restore, save action
+    WIFProvider = "wif-provider", // Input for cache, restore, save action
+    ServiceAccount = "service-account", // Input for cache, restore, save action
+    FallbackToGitHub = "fallback-to-github" // Input for cache, save action
 }
 
 export enum Outputs {

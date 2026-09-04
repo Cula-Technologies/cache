@@ -78036,7 +78036,10 @@ var Inputs;
     Inputs["FailOnCacheMiss"] = "fail-on-cache-miss";
     Inputs["LookupOnly"] = "lookup-only";
     Inputs["GCSBucket"] = "gcs-bucket";
-    Inputs["GCSPathPrefix"] = "gcs-path-prefix"; // Input for cache, restore, save action
+    Inputs["GCSPathPrefix"] = "gcs-path-prefix";
+    Inputs["WIFProvider"] = "wif-provider";
+    Inputs["ServiceAccount"] = "service-account";
+    Inputs["FallbackToGitHub"] = "fallback-to-github"; // Input for cache, save action
 })(Inputs || (exports.Inputs = Inputs = {}));
 var Outputs;
 (function (Outputs) {
@@ -78183,7 +78186,18 @@ function saveImpl(stateProvider) {
                 return;
             }
             const enableCrossOsArchive = utils.getInputAsBool(constants_1.Inputs.EnableCrossOsArchive);
-            cacheId = yield cache.saveCache(cachePaths, primaryKey, { uploadChunkSize: utils.getInputAsInt(constants_1.Inputs.UploadChunkSize) }, enableCrossOsArchive, !backfillGCS);
+            // A caller targeting one specific bucket may not want the GitHub
+            // cache as a consolation prize. Writing there on failure reports
+            // success from the wrong destination, and lands the entry under a key
+            // that later restores will serve from GitHub — so GCS never gets it,
+            // which is the failure backfillGCS exists to undo.
+            //
+            // Defaults to true: for a repo with no GCS configured, behaving like
+            // actions/cache is the whole point of the fallback.
+            const fallbackToGitHub = core.getInput(constants_1.Inputs.FallbackToGitHub) === ""
+                ? true
+                : utils.getInputAsBool(constants_1.Inputs.FallbackToGitHub);
+            cacheId = yield cache.saveCache(cachePaths, primaryKey, { uploadChunkSize: utils.getInputAsInt(constants_1.Inputs.UploadChunkSize) }, enableCrossOsArchive, fallbackToGitHub && !backfillGCS);
             if (cacheId != -1) {
                 core.info(`Cache saved with key: ${primaryKey}`);
             }
@@ -78476,6 +78490,131 @@ Otherwise please upgrade to GHES version >= 3.5 and If you are also using Github
 
 /***/ }),
 
+/***/ 65683:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getFederatedAuthClient = getFederatedAuthClient;
+const core = __importStar(__nccwpck_require__(37484));
+const google_auth_library_1 = __nccwpck_require__(492);
+const constants_1 = __nccwpck_require__(27242);
+/**
+ * Federation inputs, or undefined when the caller did not supply any.
+ *
+ * Both are required together. A provider with no service account, or the
+ * reverse, would otherwise fall through to ambient credentials and write the
+ * bucket as whatever identity the runner happens to carry — the confusion this
+ * exists to remove.
+ */
+function getFederationConfig() {
+    const wifProvider = core.getInput(constants_1.Inputs.WIFProvider);
+    const serviceAccount = core.getInput(constants_1.Inputs.ServiceAccount);
+    if (!wifProvider && !serviceAccount) {
+        return undefined;
+    }
+    if (!wifProvider || !serviceAccount) {
+        core.warning("wif-provider and service-account must be set together; " +
+            "falling back to ambient credentials.");
+        return undefined;
+    }
+    return { wifProvider, serviceAccount };
+}
+/**
+ * An auth client for `service-account`, obtained by exchanging this workflow
+ * run's OIDC token through Workload Identity Federation. Returns undefined
+ * when no federation inputs were given, which is every existing caller: the
+ * Storage client then uses Application Default Credentials exactly as before.
+ *
+ * Built as an external account credential rather than a hand-rolled STS
+ * exchange, so google-auth-library owns the token refresh and the service
+ * account impersonation. `credential_source.url` is GitHub's own OIDC
+ * endpoint, the same shape google-github-actions/auth writes into the
+ * credentials file it exports.
+ */
+function getFederatedAuthClient() {
+    const config = getFederationConfig();
+    if (!config) {
+        return undefined;
+    }
+    // Only read the token endpoint once federation is actually requested. It
+    // exists solely in jobs that grant `permissions: id-token: write`, so
+    // reaching for it unconditionally would break every caller that does not.
+    const requestUrl = process.env["ACTIONS_ID_TOKEN_REQUEST_URL"];
+    const requestToken = process.env["ACTIONS_ID_TOKEN_REQUEST_TOKEN"];
+    if (!requestUrl || !requestToken) {
+        core.warning("wif-provider was set but no OIDC token endpoint is available; " +
+            "the job needs `permissions: id-token: write`. Falling back " +
+            "to ambient credentials.");
+        return undefined;
+    }
+    const audience = `//iam.googleapis.com/${config.wifProvider}`;
+    try {
+        const authClient = google_auth_library_1.ExternalAccountClient.fromJSON({
+            type: "external_account",
+            audience,
+            subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+            token_url: "https://sts.googleapis.com/v1/token",
+            service_account_impersonation_url: "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/" +
+                `${config.serviceAccount}:generateAccessToken`,
+            credential_source: {
+                url: `${requestUrl}&audience=${encodeURIComponent(audience)}`,
+                headers: { Authorization: `Bearer ${requestToken}` },
+                format: { type: "json", subject_token_field_name: "value" }
+            }
+        });
+        if (!authClient) {
+            core.warning("Could not build a federated credential; falling back to " +
+                "ambient credentials.");
+            return undefined;
+        }
+        authClient.scopes = ["https://www.googleapis.com/auth/cloud-platform"];
+        core.info(`Authenticating to GCS as ${config.serviceAccount}`);
+        return authClient;
+    }
+    catch (error) {
+        core.warning(`Failed to build a federated credential: ${error.message}. Falling back to ambient credentials.`);
+        return undefined;
+    }
+}
+
+
+/***/ }),
+
 /***/ 59614:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -78535,12 +78674,17 @@ const storage_1 = __nccwpck_require__(28525);
 const path = __importStar(__nccwpck_require__(16928));
 const constants_1 = __nccwpck_require__(27242);
 const actionUtils_1 = __nccwpck_require__(8270);
+const federatedAuth_1 = __nccwpck_require__(65683);
 const DEFAULT_PATH_PREFIX = "github-cache";
-// Function to initialize GCS client using Application Default Credentials
+// Initializes the GCS client. Uses Application Default Credentials unless
+// wif-provider and service-account were given, in which case the run
+// federates into that service account instead — which is how a bucket that
+// grants no access to the runner's own identity becomes writable.
 function getGCSClient() {
     try {
         core.info("Initializing GCS client");
-        return new storage_1.Storage();
+        const authClient = (0, federatedAuth_1.getFederatedAuthClient)();
+        return authClient ? new storage_1.Storage({ authClient }) : new storage_1.Storage();
     }
     catch (error) {
         core.warning(`Failed to initialize GCS client: ${error.message}`);
@@ -78684,6 +78828,19 @@ function saveToGCS(paths, key) {
         if (cachePaths.length === 0) {
             throw new Error(`Path Validation Error: Path(s) specified in the action for caching do(es) not exist, hence no cache is being saved.`);
         }
+        // Skip a key the bucket already holds, before paying for the tar.
+        //
+        // GitHub's own cache backend refuses to overwrite an existing key, so a
+        // repeat save of one was never meant to transfer anything; on GCS it
+        // silently re-uploaded instead. Skipping matches that behaviour, and it is
+        // required on a write-once bucket — objectCreator without objects.delete —
+        // where GCS rejects the overwrite outright and every repeat save fails on
+        // an entry that was already there.
+        const gcsPath = getGCSPath(pathPrefix, key, compressionMethod);
+        if (yield checkFileExists(storage, bucket, gcsPath)) {
+            core.info(`Cache already exists at ${bucket}/${gcsPath}; not uploading`);
+            return gcsPath;
+        }
         const archiveFolder = yield utils.createTempDirectory();
         const archivePath = path.join(archiveFolder, utils.getCacheFileName(compressionMethod));
         core.debug(`Archive Path: ${archivePath}`);
@@ -78692,7 +78849,6 @@ function saveToGCS(paths, key) {
             if (core.isDebug()) {
                 yield (0, tar_1.listTar)(archivePath, compressionMethod);
             }
-            const gcsPath = getGCSPath(pathPrefix, key, compressionMethod);
             core.info(`Uploading to GCS: ${bucket}/${gcsPath}`);
             const [file] = yield storage.bucket(bucket).upload(archivePath, {
                 destination: gcsPath,

@@ -33,6 +33,30 @@ inputs:
     description: 'Optional prefix path within the GCS bucket for cache files'
     required: false
     default: 'github-cache'
+  wif-provider:
+    description: >
+      Optional Workload Identity Federation provider resource name, e.g.
+      projects/123/locations/global/workloadIdentityPools/pool/providers/gh.
+      When set together with service-account, this run's OIDC token is
+      exchanged for that service account and the GCS bucket is read and
+      written as it, instead of as the runner's ambient credentials. The job
+      must grant `permissions: id-token: write`.
+    required: false
+  service-account:
+    description: >
+      Service account to impersonate through wif-provider. Required when
+      wif-provider is set, and ignored without it.
+    required: false
+  fallback-to-github:
+    description: >
+      Whether to save to the GitHub Actions cache when the GCS save fails.
+      Defaults to true, which is the actions/cache behaviour. Set false when
+      the point of the step is to land in one specific bucket: a fallback
+      would otherwise report success from the wrong destination, and the entry
+      it writes gets served from GitHub by later restores so GCS never
+      receives the key.
+    required: false
+    default: 'true'
   save-always:
     description: 'Run the post step to save the cache even if another step before fails'
     default: 'false'
