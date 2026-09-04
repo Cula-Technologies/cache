@@ -6,7 +6,10 @@ export enum Inputs {
     EnableCrossOsArchive = "enableCrossOsArchive", // Input for cache, restore, save action
     FailOnCacheMiss = "fail-on-cache-miss", // Input for cache, restore action
     LookupOnly = "lookup-only", // Input for cache, restore action
-    GCSBucket = "gcs-bucket", // Input for cache, restore, save action
+    GCSBuckets = "gcs-buckets", // Input for cache, restore, save action
+    // Superseded by GCSBuckets; still read so existing callers, and
+    // Cula-Technologies/checkout, keep working.
+    GCSBucket = "gcs-bucket", // Deprecated alias of GCSBuckets
     GCSPathPrefix = "gcs-path-prefix", // Input for cache, restore, save action
     WIFProvider = "wif-provider", // Input for cache, restore, save action
     ServiceAccount = "service-account", // Input for cache, restore, save action

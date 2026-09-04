@@ -43,4 +43,9 @@ export function clearInputs(): void {
     delete process.env[getInputName(Inputs.FailOnCacheMiss)];
     delete process.env[getInputName(Inputs.LookupOnly)];
     delete process.env[getInputName(Inputs.GCSBucket)];
+    delete process.env[getInputName(Inputs.GCSBuckets)];
+    delete process.env[getInputName(Inputs.GCSPathPrefix)];
+    delete process.env[getInputName(Inputs.WIFProvider)];
+    delete process.env[getInputName(Inputs.ServiceAccount)];
+    delete process.env[getInputName(Inputs.FallbackToGitHub)];
 }

@@ -12,7 +12,7 @@ import { Storage } from "@google-cloud/storage";
 import * as path from "path";
 
 import { CacheSource, Inputs } from "../constants";
-import { getGCSBucket, isGCSAvailable } from "./actionUtils";
+import { getGCSBucket, getGCSBuckets, isGCSAvailable } from "./actionUtils";
 import { getFederatedAuthClient } from "./federatedAuth";
 
 const DEFAULT_PATH_PREFIX = "github-cache";
@@ -139,7 +139,7 @@ async function restoreFromGCS(
         return undefined;
     }
 
-    const bucket = getGCSBucket();
+    const buckets = getGCSBuckets();
     const pathPrefix =
         core.getInput(Inputs.GCSPathPrefix) || DEFAULT_PATH_PREFIX;
     const compressionMethod = await utils.getCompressionMethod();
@@ -153,7 +153,7 @@ async function restoreFromGCS(
     const keys = [primaryKey, ...restoreKeys];
     const match = await findFileOnGCS(
         storage,
-        bucket,
+        buckets,
         pathPrefix,
         keys,
         compressionMethod
@@ -169,7 +169,7 @@ async function restoreFromGCS(
     // (restoreImpl) compares the return value against primaryKey to set the
     // `cache-hit` output — returning the gcs path makes `cache-hit` always
     // false, re-triggering downstream install/build steps that gate on it.
-    const { key: matchedKey, path: gcsPath } = match;
+    const { key: matchedKey, path: gcsPath, bucket } = match;
 
     // If lookup only, just return the key
     if (options?.lookupOnly) {
@@ -295,47 +295,59 @@ async function saveToGCS(
 
 async function findFileOnGCS(
     storage: Storage,
-    bucket: string,
+    buckets: string[],
     pathPrefix: string,
     keys: string[],
     compressionMethod: CompressionMethod
-): Promise<{ key: string; path: string } | undefined> {
+): Promise<{ key: string; path: string; bucket: string } | undefined> {
     const [primaryKey, ...restoreKeys] = keys;
     const fileName = utils.getCacheFileName(compressionMethod);
+
+    // Key quality outranks bucket order, hence the loop nesting: every bucket
+    // is tried for the primary key before any bucket is tried for a restore
+    // key. An exact match is the content the caller asked for; a prefix match
+    // is something older. Preferring the earlier bucket instead would restore
+    // a stale entry from it while an exact one sat in the next.
 
     // Primary key: exact match only. The `cache-hit` output compares the
     // returned key against the primary key, so a prefix match here would
     // report false hits.
     const primaryPath = getGCSPath(pathPrefix, primaryKey, compressionMethod);
-    if (await checkFileExists(storage, bucket, primaryPath)) {
-        core.info(`Found file on bucket: ${bucket} with key: ${primaryPath}`);
-        return { key: primaryKey, path: primaryPath };
+    for (const bucket of buckets) {
+        if (await checkFileExists(storage, bucket, primaryPath)) {
+            core.info(
+                `Found file on bucket: ${bucket} with key: ${primaryPath}`
+            );
+            return { key: primaryKey, path: primaryPath, bucket };
+        }
     }
 
     // Restore keys: prefix match, newest entry wins — mirrors the
     // actions/cache restore-keys contract that callers rely on for rolling
     // caches (e.g. `nx-` matching `nx-<sha>` saved by an earlier run).
     for (const key of restoreKeys) {
-        const [files] = await storage
-            .bucket(bucket)
-            .getFiles({ prefix: `${pathPrefix}/${key}` });
-        const newest = files
-            .filter(file => file.name.endsWith(`.${fileName}`))
-            .sort(
-                (a, b) =>
-                    new Date(b.metadata.updated ?? 0).getTime() -
-                    new Date(a.metadata.updated ?? 0).getTime()
-            )[0];
+        for (const bucket of buckets) {
+            const [files] = await storage
+                .bucket(bucket)
+                .getFiles({ prefix: `${pathPrefix}/${key}` });
+            const newest = files
+                .filter(file => file.name.endsWith(`.${fileName}`))
+                .sort(
+                    (a, b) =>
+                        new Date(b.metadata.updated ?? 0).getTime() -
+                        new Date(a.metadata.updated ?? 0).getTime()
+                )[0];
 
-        if (newest) {
-            const matchedKey = newest.name.slice(
-                pathPrefix.length + 1,
-                -(fileName.length + 1)
-            );
-            core.info(
-                `Found file on bucket: ${bucket} with key: ${newest.name}`
-            );
-            return { key: matchedKey, path: newest.name };
+            if (newest) {
+                const matchedKey = newest.name.slice(
+                    pathPrefix.length + 1,
+                    -(fileName.length + 1)
+                );
+                core.info(
+                    `Found file on bucket: ${bucket} with key: ${newest.name}`
+                );
+                return { key: matchedKey, path: newest.name, bucket };
+            }
         }
     }
     return undefined;

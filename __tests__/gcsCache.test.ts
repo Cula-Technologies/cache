@@ -52,9 +52,37 @@ function mockStorage(objects: FakeObject[]): void {
     }));
 }
 
+/** Like mockStorage, but each bucket holds its own objects. */
+function mockBuckets(contents: Record<string, FakeObject[]>): void {
+    (Storage as unknown as jest.Mock).mockImplementation(() => ({
+        bucket: (name: string) => {
+            const objects = contents[name] ?? [];
+            return {
+                file: (path: string) => ({
+                    exists: jest
+                        .fn()
+                        .mockResolvedValue([
+                            objects.some(o => o.name === path)
+                        ]),
+                    download: jest.fn().mockResolvedValue(undefined)
+                }),
+                getFiles: jest.fn(({ prefix }: { prefix: string }) => [
+                    objects
+                        .filter(o => o.name.startsWith(prefix))
+                        .map(o => ({
+                            name: o.name,
+                            metadata: { updated: o.updated }
+                        }))
+                ])
+            };
+        }
+    }));
+}
+
 beforeEach(() => {
     jest.mocked(actionUtils.isGCSAvailable).mockReturnValue(true);
     jest.mocked(actionUtils.getGCSBucket).mockReturnValue(BUCKET);
+    jest.mocked(actionUtils.getGCSBuckets).mockReturnValue([BUCKET]);
     jest.mocked(cache.restoreCache).mockResolvedValue(undefined);
 });
 
@@ -167,4 +195,67 @@ test("keys containing slashes resolve to the full matched key", async () => {
     ]);
 
     expect(result?.key).toBe("develop/nx-abc");
+});
+
+describe("multiple buckets", () => {
+    const OWN = "own-tier";
+    const UPSTREAM = "upstream-tier";
+    const exact = "github-cache/nx-abc123.cache.tzst";
+    const older = "github-cache/nx-older0.cache.tzst";
+
+    beforeEach(() => {
+        jest.mocked(actionUtils.getGCSBuckets).mockReturnValue([OWN, UPSTREAM]);
+    });
+
+    test("an exact match upstream beats a prefix match in the first bucket", async () => {
+        mockBuckets({
+            [OWN]: [{ name: older, updated: "2026-01-02T00:00:00Z" }],
+            [UPSTREAM]: [{ name: exact, updated: "2026-01-01T00:00:00Z" }]
+        });
+
+        const result = await restoreCache(["some/path"], "nx-abc123", ["nx-"], {
+            lookupOnly: true
+        });
+
+        // Bucket order must not win here: `nx-older0` is different content,
+        // while the upstream hit is exactly what was asked for.
+        expect(result?.key).toBe("nx-abc123");
+    });
+
+    test("the earlier bucket wins when both hold the exact key", async () => {
+        mockBuckets({
+            [OWN]: [{ name: exact, updated: "2026-01-01T00:00:00Z" }],
+            [UPSTREAM]: [{ name: exact, updated: "2026-06-01T00:00:00Z" }]
+        });
+
+        const result = await restoreCache(["some/path"], "nx-abc123", [], {
+            lookupOnly: true
+        });
+
+        expect(result?.key).toBe("nx-abc123");
+        expect(result?.source).toBe(CacheSource.GCS);
+    });
+
+    test("a prefix match falls through to the next bucket", async () => {
+        mockBuckets({
+            [OWN]: [],
+            [UPSTREAM]: [{ name: older, updated: "2026-01-02T00:00:00Z" }]
+        });
+
+        const result = await restoreCache(["some/path"], "nx-abc123", ["nx-"], {
+            lookupOnly: true
+        });
+
+        expect(result?.key).toBe("nx-older0");
+    });
+
+    test("no bucket holding anything is still a miss", async () => {
+        mockBuckets({ [OWN]: [], [UPSTREAM]: [] });
+
+        const result = await restoreCache(["some/path"], "nx-abc123", ["nx-"], {
+            lookupOnly: true
+        });
+
+        expect(result).toBeUndefined();
+    });
 });
