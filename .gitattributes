@@ -1,2 +1,10 @@
 .licenses/** -diff linguist-generated=true
 * text=auto eol=lf
+
+# Generated bundles: `npm run build` output, committed so the action runs
+# without a build step. `-merge` is the important one — two branches that both
+# rebuild will otherwise textually auto-merge into a bundle neither side
+# produced, which either silently drops half a change or ships something that
+# was never built. With this, git raises a conflict and the resolution is to
+# rebuild. `-diff` and linguist-generated keep 5 MB of bundle out of reviews.
+dist/** -diff -merge linguist-generated=true
