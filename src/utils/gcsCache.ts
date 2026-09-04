@@ -13,6 +13,7 @@ import * as path from "path";
 
 import { CacheSource, Inputs } from "../constants";
 import { getGCSBucket, isGCSAvailable } from "./actionUtils";
+import { getFederatedAuthClient } from "./federatedAuth";
 
 const DEFAULT_PATH_PREFIX = "github-cache";
 
@@ -21,11 +22,15 @@ export interface RestoreResult {
     source: CacheSource;
 }
 
-// Function to initialize GCS client using Application Default Credentials
+// Initializes the GCS client. Uses Application Default Credentials unless
+// wif-provider and service-account were given, in which case the run
+// federates into that service account instead — which is how a bucket that
+// grants no access to the runner's own identity becomes writable.
 function getGCSClient(): Storage | null {
     try {
         core.info("Initializing GCS client");
-        return new Storage();
+        const authClient = getFederatedAuthClient();
+        return authClient ? new Storage({ authClient }) : new Storage();
     } catch (error) {
         core.warning(
             `Failed to initialize GCS client: ${(error as Error).message}`

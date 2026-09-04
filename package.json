@@ -27,7 +27,8 @@
     "@actions/core": "^2.0.3",
     "@actions/exec": "^2.0.0",
     "@actions/io": "^2.0.0",
-    "@google-cloud/storage": "^7.16.0"
+    "@google-cloud/storage": "^7.16.0",
+    "google-auth-library": "^9.15.1"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",
