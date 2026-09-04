@@ -11,16 +11,26 @@ import * as core from "@actions/core";
 import { Storage } from "@google-cloud/storage";
 import * as path from "path";
 
-import { Inputs } from "../constants";
+import { CacheSource, Inputs } from "../constants";
 import { getGCSBucket, isGCSAvailable } from "./actionUtils";
+import { getFederatedAuthClient } from "./federatedAuth";
 
 const DEFAULT_PATH_PREFIX = "github-cache";
 
-// Function to initialize GCS client using Application Default Credentials
+export interface RestoreResult {
+    key: string;
+    source: CacheSource;
+}
+
+// Initializes the GCS client. Uses Application Default Credentials unless
+// wif-provider and service-account were given, in which case the run
+// federates into that service account instead — which is how a bucket that
+// grants no access to the runner's own identity becomes writable.
 function getGCSClient(): Storage | null {
     try {
         core.info("Initializing GCS client");
-        return new Storage();
+        const authClient = getFederatedAuthClient();
+        return authClient ? new Storage({ authClient }) : new Storage();
     } catch (error) {
         core.warning(
             `Failed to initialize GCS client: ${(error as Error).message}`
@@ -35,7 +45,7 @@ export async function restoreCache(
     restoreKeys?: string[],
     options?: DownloadOptions,
     enableCrossOsArchive?: boolean
-): Promise<string | undefined> {
+): Promise<RestoreResult | undefined> {
     // Check if GCS is available
     if (isGCSAvailable()) {
         try {
@@ -48,7 +58,7 @@ export async function restoreCache(
 
             if (result) {
                 core.info(`Cache restored from GCS with key: ${result}`);
-                return result;
+                return { key: result, source: CacheSource.GCS };
             }
 
             core.info("Cache not found in GCS, falling back to GitHub cache");
@@ -63,20 +73,28 @@ export async function restoreCache(
     }
 
     // Fall back to GitHub cache
-    return await cache.restoreCache(
+    const key = await cache.restoreCache(
         paths,
         primaryKey,
         restoreKeys,
         options,
         enableCrossOsArchive
     );
+    return key ? { key, source: CacheSource.GitHub } : undefined;
 }
 
+/**
+ * Saves to GCS when it is configured, otherwise (or when the GCS upload
+ * fails) to the GitHub cache. `fallbackToGitHub: false` is for backfilling a
+ * GCS miss the GitHub cache already covered: a second GitHub save would only
+ * fail on the existing entry.
+ */
 export async function saveCache(
     paths: string[],
     key: string,
     options?: UploadOptions,
-    enableCrossOsArchive?: boolean
+    enableCrossOsArchive?: boolean,
+    fallbackToGitHub = true
 ): Promise<number> {
     if (isGCSAvailable()) {
         try {
@@ -86,13 +104,18 @@ export async function saveCache(
                 return 1; // Success ID
             }
 
-            core.warning("Failed to save to GCS, falling back to GitHub cache");
-            return -1;
+            core.warning("Failed to save to GCS");
         } catch (error) {
             core.warning(`Failed to save to GCS: ${(error as Error).message}`);
-            core.info("Falling back to GitHub cache");
         }
+        if (!fallbackToGitHub) {
+            return -1;
+        }
+        core.info("Falling back to GitHub cache");
     } else {
+        if (!fallbackToGitHub) {
+            return -1;
+        }
         core.info("GCS not configured, using GitHub cache");
     }
 
@@ -217,6 +240,22 @@ async function saveToGCS(
         );
     }
 
+    // Skip a key the bucket already holds, before paying for the tar.
+    //
+    // GitHub's own cache backend refuses to overwrite an existing key, so a
+    // repeat save of one was never meant to transfer anything; on GCS it
+    // silently re-uploaded instead. Skipping matches that behaviour, and it is
+    // required on a write-once bucket — objectCreator without objects.delete —
+    // where GCS rejects the overwrite outright and every repeat save fails on
+    // an entry that was already there.
+    const gcsPath = getGCSPath(pathPrefix, key, compressionMethod);
+    if (await checkFileExists(storage, bucket, gcsPath)) {
+        core.info(
+            `Cache already exists at ${bucket}/${gcsPath}; not uploading`
+        );
+        return gcsPath;
+    }
+
     const archiveFolder = await utils.createTempDirectory();
     const archivePath = path.join(
         archiveFolder,
@@ -231,7 +270,6 @@ async function saveToGCS(
             await listTar(archivePath, compressionMethod);
         }
 
-        const gcsPath = getGCSPath(pathPrefix, key, compressionMethod);
         core.info(`Uploading to GCS: ${bucket}/${gcsPath}`);
         const [file] = await storage.bucket(bucket).upload(archivePath, {
             destination: gcsPath,

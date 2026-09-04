@@ -7,7 +7,10 @@ export enum Inputs {
     FailOnCacheMiss = "fail-on-cache-miss", // Input for cache, restore action
     LookupOnly = "lookup-only", // Input for cache, restore action
     GCSBucket = "gcs-bucket", // Input for cache, restore, save action
-    GCSPathPrefix = "gcs-path-prefix" // Input for cache, restore, save action
+    GCSPathPrefix = "gcs-path-prefix", // Input for cache, restore, save action
+    WIFProvider = "wif-provider", // Input for cache, restore, save action
+    ServiceAccount = "service-account", // Input for cache, restore, save action
+    FallbackToGitHub = "fallback-to-github" // Input for cache, save action
 }
 
 export enum Outputs {
@@ -18,7 +21,19 @@ export enum Outputs {
 
 export enum State {
     CachePrimaryKey = "CACHE_KEY",
-    CacheMatchedKey = "CACHE_RESULT"
+    CacheMatchedKey = "CACHE_RESULT",
+    // Which backend served the restore, so the post step knows whether a hit
+    // still has to be written to GCS.
+    CacheSource = "CACHE_SOURCE",
+    // The resolved `path` input, newline-separated. A composite action's post
+    // step cannot see sibling step outputs, so `path: ${{ steps.x.outputs.y }}`
+    // arrives empty there; the save falls back to what restore saw.
+    CachePaths = "CACHE_PATHS"
+}
+
+export enum CacheSource {
+    GCS = "gcs",
+    GitHub = "github"
 }
 
 export enum Events {
