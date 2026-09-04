@@ -1,6 +1,7 @@
 import * as cache from "@actions/cache";
 import { Storage } from "@google-cloud/storage";
 
+import { CacheSource } from "../src/constants";
 import * as actionUtils from "../src/utils/actionUtils";
 import { restoreCache } from "../src/utils/gcsCache";
 
@@ -73,7 +74,10 @@ test("primary key exact match returns primary key", async () => {
         lookupOnly: true
     });
 
-    expect(result).toBe("nx-abc123");
+    expect(result?.key).toBe("nx-abc123");
+    // Assert the source too: it is the field #4 added and these tests did not
+    // cover, which is why merging the two branches broke this file quietly.
+    expect(result?.source).toBe(CacheSource.GCS);
 });
 
 test("restore key prefix-matches and returns newest entry's key", async () => {
@@ -92,7 +96,7 @@ test("restore key prefix-matches and returns newest entry's key", async () => {
         lookupOnly: true
     });
 
-    expect(result).toBe("nx-newer00");
+    expect(result?.key).toBe("nx-newer00");
 });
 
 test("restore key ignores objects with other compression suffix", async () => {
@@ -130,7 +134,7 @@ test("restore keys are tried in order", async () => {
         { lookupOnly: true }
     );
 
-    expect(result).toBe("preferred-key");
+    expect(result?.key).toBe("preferred-key");
 });
 
 test("no match falls back to GitHub cache", async () => {
@@ -162,5 +166,5 @@ test("keys containing slashes resolve to the full matched key", async () => {
         "develop/"
     ]);
 
-    expect(result).toBe("develop/nx-abc");
+    expect(result?.key).toBe("develop/nx-abc");
 });
