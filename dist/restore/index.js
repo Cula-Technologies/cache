@@ -78785,6 +78785,19 @@ function saveToGCS(paths, key) {
         if (cachePaths.length === 0) {
             throw new Error(`Path Validation Error: Path(s) specified in the action for caching do(es) not exist, hence no cache is being saved.`);
         }
+        // Skip a key the bucket already holds, before paying for the tar.
+        //
+        // GitHub's own cache backend refuses to overwrite an existing key, so a
+        // repeat save of one was never meant to transfer anything; on GCS it
+        // silently re-uploaded instead. Skipping matches that behaviour, and it is
+        // required on a write-once bucket — objectCreator without objects.delete —
+        // where GCS rejects the overwrite outright and every repeat save fails on
+        // an entry that was already there.
+        const gcsPath = getGCSPath(pathPrefix, key, compressionMethod);
+        if (yield checkFileExists(storage, bucket, gcsPath)) {
+            core.info(`Cache already exists at ${bucket}/${gcsPath}; not uploading`);
+            return gcsPath;
+        }
         const archiveFolder = yield utils.createTempDirectory();
         const archivePath = path.join(archiveFolder, utils.getCacheFileName(compressionMethod));
         core.debug(`Archive Path: ${archivePath}`);
@@ -78793,7 +78806,6 @@ function saveToGCS(paths, key) {
             if (core.isDebug()) {
                 yield (0, tar_1.listTar)(archivePath, compressionMethod);
             }
-            const gcsPath = getGCSPath(pathPrefix, key, compressionMethod);
             core.info(`Uploading to GCS: ${bucket}/${gcsPath}`);
             const [file] = yield storage.bucket(bucket).upload(archivePath, {
                 destination: gcsPath,
