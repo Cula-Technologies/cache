@@ -23,9 +23,24 @@ inputs:
     description: 'Check if a cache entry exists for the given input(s) (key, restore-keys) without downloading the cache'
     default: 'false'
     required: false
-  gcs-bucket:
-    description: 'Google Cloud Storage bucket name to use for caching. When provided, GCS will be used as the cache backend. Defaults to the CULA_CACHE_GCS_BUCKET or CONFIGURED_GCS_BUCKET environment variable when omitted.'
+  gcs-buckets:
+    description: >
+      Google Cloud Storage bucket(s) to use as the cache backend. May name
+      several, one per line or comma separated: a restore walks them in the
+      given order, while a save only ever writes the first. That lets a caller
+      read from a bucket it may only read while writing solely to its own.
+      Within a restore, key quality outranks bucket order — every bucket is
+      tried for the primary key before any is tried for a restore-key prefix.
+      Defaults to the CULA_CACHE_GCS_BUCKET or CONFIGURED_GCS_BUCKET
+      environment variable when omitted.
     required: false
+  gcs-bucket:
+    description: >
+      Deprecated alias of gcs-buckets, still read for callers not yet updated.
+    required: false
+    deprecationMessage: |
+      gcs-bucket is deprecated; use gcs-buckets, which accepts one name or
+      several. Behaviour is unchanged for a single bucket.
   gcs-path-prefix:
     description: 'Optional prefix path within the GCS bucket for cache files'
     default: 'github-cache'

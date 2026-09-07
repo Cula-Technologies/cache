@@ -66,13 +66,36 @@ export function getInputAsBool(
     return result.toLowerCase() === "true";
 }
 
-export function getGCSBucket(): string {
-    return (
+/**
+ * Buckets to consider, in the caller's order of preference.
+ *
+ * `gcs-buckets` may name several, one per line or comma separated. A restore
+ * walks them in order; a save only ever writes the first. That is what lets a
+ * caller read from buckets it may only read — a more-trusted tier's cache, say
+ * — while writing solely to its own.
+ */
+export function getGCSBuckets(): string[] {
+    const configured =
+        core.getInput(Inputs.GCSBuckets) ||
+        // The singular alias, for callers not yet updated — notably
+        // Cula-Technologies/checkout, which passes gcs-bucket through to
+        // restore and save.
         core.getInput(Inputs.GCSBucket) ||
         process.env["CULA_CACHE_GCS_BUCKET"] ||
         process.env["CONFIGURED_GCS_BUCKET"] ||
-        ""
-    );
+        "";
+    const buckets = configured
+        .split(/[\n,]/)
+        .map(bucket => bucket.trim().replace(/^gs:\/\//, ""))
+        .filter(bucket => bucket !== "");
+    // Preserve order while dropping repeats: a caller composing its own tier
+    // with the tiers it reads from can easily name one of them twice.
+    return [...new Set(buckets)];
+}
+
+/** The single bucket a save writes to: the first the caller named. */
+export function getGCSBucket(): string {
+    return getGCSBuckets()[0] ?? "";
 }
 
 // Check if GCS is configured and available

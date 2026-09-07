@@ -1,7 +1,7 @@
 import * as cache from "@actions/cache";
 import * as core from "@actions/core";
 
-import { Events, RefKey } from "../src/constants";
+import { Events, Inputs, RefKey } from "../src/constants";
 import * as actionUtils from "../src/utils/actionUtils";
 import * as testUtils from "../src/utils/testUtils";
 
@@ -324,4 +324,61 @@ test("isGhes returns false when the GITHUB_SERVER_URL environment variable has a
 test("isGhes returns true when the GITHUB_SERVER_URL environment variable is set to some other URL", async () => {
     process.env["GITHUB_SERVER_URL"] = "https://src.onpremise.fabrikam.com";
     expect(actionUtils.isGhes()).toBeTruthy();
+});
+
+describe("getGCSBuckets", () => {
+    afterEach(() => {
+        testUtils.clearInputs();
+        delete process.env["CULA_CACHE_GCS_BUCKET"];
+    });
+
+    test("a single bucket is unchanged", () => {
+        testUtils.setInput(Inputs.GCSBuckets, "only-bucket");
+        expect(actionUtils.getGCSBuckets()).toEqual(["only-bucket"]);
+    });
+
+    test("newlines and commas both separate, gs:// is stripped", () => {
+        testUtils.setInput(
+            Inputs.GCSBuckets,
+            "  gs://own-tier\nupstream-a , gs://upstream-b \n\n"
+        );
+        expect(actionUtils.getGCSBuckets()).toEqual([
+            "own-tier",
+            "upstream-a",
+            "upstream-b"
+        ]);
+    });
+
+    test("repeats collapse but order survives", () => {
+        // A caller composing "own tier + the tiers it reads from" can easily
+        // name one of them twice.
+        testUtils.setInput(Inputs.GCSBuckets, "a\nb\na");
+        expect(actionUtils.getGCSBuckets()).toEqual(["a", "b"]);
+    });
+
+    test("falls back to the environment, and empty means none", () => {
+        process.env["CULA_CACHE_GCS_BUCKET"] = "from-env";
+        expect(actionUtils.getGCSBuckets()).toEqual(["from-env"]);
+        delete process.env["CULA_CACHE_GCS_BUCKET"];
+        expect(actionUtils.getGCSBuckets()).toEqual([]);
+    });
+
+    test("the deprecated singular alias is still honoured", () => {
+        // Cula-Technologies/checkout passes gcs-bucket through to restore and
+        // save at ~70 call sites. Dropping it would not error there — the
+        // input would just be ignored — so this is the regression guard.
+        testUtils.setInput(Inputs.GCSBucket, "legacy-name\nsecond");
+        expect(actionUtils.getGCSBuckets()).toEqual(["legacy-name", "second"]);
+    });
+
+    test("gcs-buckets wins when both are set", () => {
+        testUtils.setInput(Inputs.GCSBuckets, "new-name");
+        testUtils.setInput(Inputs.GCSBucket, "old-name");
+        expect(actionUtils.getGCSBuckets()).toEqual(["new-name"]);
+    });
+
+    test("a save targets the first bucket only", () => {
+        testUtils.setInput(Inputs.GCSBuckets, "own-tier\nupstream");
+        expect(actionUtils.getGCSBucket()).toBe("own-tier");
+    });
 });

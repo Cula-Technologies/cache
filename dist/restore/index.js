@@ -78035,6 +78035,9 @@ var Inputs;
     Inputs["EnableCrossOsArchive"] = "enableCrossOsArchive";
     Inputs["FailOnCacheMiss"] = "fail-on-cache-miss";
     Inputs["LookupOnly"] = "lookup-only";
+    Inputs["GCSBuckets"] = "gcs-buckets";
+    // Superseded by GCSBuckets; still read so existing callers, and
+    // Cula-Technologies/checkout, keep working.
     Inputs["GCSBucket"] = "gcs-bucket";
     Inputs["GCSPathPrefix"] = "gcs-path-prefix";
     Inputs["WIFProvider"] = "wif-provider";
@@ -78351,6 +78354,7 @@ exports.isValidEvent = isValidEvent;
 exports.getInputAsArray = getInputAsArray;
 exports.getInputAsInt = getInputAsInt;
 exports.getInputAsBool = getInputAsBool;
+exports.getGCSBuckets = getGCSBuckets;
 exports.getGCSBucket = getGCSBucket;
 exports.isGCSAvailable = isGCSAvailable;
 exports.isCacheFeatureAvailable = isCacheFeatureAvailable;
@@ -78398,11 +78402,35 @@ function getInputAsBool(name, options) {
     const result = core.getInput(name, options);
     return result.toLowerCase() === "true";
 }
-function getGCSBucket() {
-    return (core.getInput(constants_1.Inputs.GCSBucket) ||
+/**
+ * Buckets to consider, in the caller's order of preference.
+ *
+ * `gcs-buckets` may name several, one per line or comma separated. A restore
+ * walks them in order; a save only ever writes the first. That is what lets a
+ * caller read from buckets it may only read — a more-trusted tier's cache, say
+ * — while writing solely to its own.
+ */
+function getGCSBuckets() {
+    const configured = core.getInput(constants_1.Inputs.GCSBuckets) ||
+        // The singular alias, for callers not yet updated — notably
+        // Cula-Technologies/checkout, which passes gcs-bucket through to
+        // restore and save.
+        core.getInput(constants_1.Inputs.GCSBucket) ||
         process.env["CULA_CACHE_GCS_BUCKET"] ||
         process.env["CONFIGURED_GCS_BUCKET"] ||
-        "");
+        "";
+    const buckets = configured
+        .split(/[\n,]/)
+        .map(bucket => bucket.trim().replace(/^gs:\/\//, ""))
+        .filter(bucket => bucket !== "");
+    // Preserve order while dropping repeats: a caller composing its own tier
+    // with the tiers it reads from can easily name one of them twice.
+    return [...new Set(buckets)];
+}
+/** The single bucket a save writes to: the first the caller named. */
+function getGCSBucket() {
+    var _a;
+    return (_a = getGCSBuckets()[0]) !== null && _a !== void 0 ? _a : "";
 }
 // Check if GCS is configured and available
 function isGCSAvailable() {
@@ -78720,13 +78748,13 @@ function restoreFromGCS(_paths_1, primaryKey_1) {
         if (!storage) {
             return undefined;
         }
-        const bucket = (0, actionUtils_1.getGCSBucket)();
+        const buckets = (0, actionUtils_1.getGCSBuckets)();
         const pathPrefix = core.getInput(constants_1.Inputs.GCSPathPrefix) || DEFAULT_PATH_PREFIX;
         const compressionMethod = yield utils.getCompressionMethod();
         const archiveFolder = yield utils.createTempDirectory();
         const archivePath = path.join(archiveFolder, utils.getCacheFileName(compressionMethod));
         const keys = [primaryKey, ...restoreKeys];
-        const match = yield findFileOnGCS(storage, bucket, pathPrefix, keys, compressionMethod);
+        const match = yield findFileOnGCS(storage, buckets, pathPrefix, keys, compressionMethod);
         if (!match) {
             core.info(`No matching cache found`);
             return undefined;
@@ -78736,7 +78764,7 @@ function restoreFromGCS(_paths_1, primaryKey_1) {
         // (restoreImpl) compares the return value against primaryKey to set the
         // `cache-hit` output — returning the gcs path makes `cache-hit` always
         // false, re-triggering downstream install/build steps that gate on it.
-        const { key: matchedKey, path: gcsPath } = match;
+        const { key: matchedKey, path: gcsPath, bucket } = match;
         // If lookup only, just return the key
         if (options === null || options === void 0 ? void 0 : options.lookupOnly) {
             core.info(`Cache found in GCS with key: ${matchedKey}`);
@@ -78828,36 +78856,45 @@ function saveToGCS(paths, key) {
         }
     });
 }
-function findFileOnGCS(storage, bucket, pathPrefix, keys, compressionMethod) {
+function findFileOnGCS(storage, buckets, pathPrefix, keys, compressionMethod) {
     return __awaiter(this, void 0, void 0, function* () {
         const [primaryKey, ...restoreKeys] = keys;
         const fileName = utils.getCacheFileName(compressionMethod);
+        // Key quality outranks bucket order, hence the loop nesting: every bucket
+        // is tried for the primary key before any bucket is tried for a restore
+        // key. An exact match is the content the caller asked for; a prefix match
+        // is something older. Preferring the earlier bucket instead would restore
+        // a stale entry from it while an exact one sat in the next.
         // Primary key: exact match only. The `cache-hit` output compares the
         // returned key against the primary key, so a prefix match here would
         // report false hits.
         const primaryPath = getGCSPath(pathPrefix, primaryKey, compressionMethod);
-        if (yield checkFileExists(storage, bucket, primaryPath)) {
-            core.info(`Found file on bucket: ${bucket} with key: ${primaryPath}`);
-            return { key: primaryKey, path: primaryPath };
+        for (const bucket of buckets) {
+            if (yield checkFileExists(storage, bucket, primaryPath)) {
+                core.info(`Found file on bucket: ${bucket} with key: ${primaryPath}`);
+                return { key: primaryKey, path: primaryPath, bucket };
+            }
         }
         // Restore keys: prefix match, newest entry wins — mirrors the
         // actions/cache restore-keys contract that callers rely on for rolling
         // caches (e.g. `nx-` matching `nx-<sha>` saved by an earlier run).
         for (const key of restoreKeys) {
-            const [files] = yield storage
-                .bucket(bucket)
-                .getFiles({ prefix: `${pathPrefix}/${key}` });
-            const newest = files
-                .filter(file => file.name.endsWith(`.${fileName}`))
-                .sort((a, b) => {
-                var _a, _b;
-                return new Date((_a = b.metadata.updated) !== null && _a !== void 0 ? _a : 0).getTime() -
-                    new Date((_b = a.metadata.updated) !== null && _b !== void 0 ? _b : 0).getTime();
-            })[0];
-            if (newest) {
-                const matchedKey = newest.name.slice(pathPrefix.length + 1, -(fileName.length + 1));
-                core.info(`Found file on bucket: ${bucket} with key: ${newest.name}`);
-                return { key: matchedKey, path: newest.name };
+            for (const bucket of buckets) {
+                const [files] = yield storage
+                    .bucket(bucket)
+                    .getFiles({ prefix: `${pathPrefix}/${key}` });
+                const newest = files
+                    .filter(file => file.name.endsWith(`.${fileName}`))
+                    .sort((a, b) => {
+                    var _a, _b;
+                    return new Date((_a = b.metadata.updated) !== null && _a !== void 0 ? _a : 0).getTime() -
+                        new Date((_b = a.metadata.updated) !== null && _b !== void 0 ? _b : 0).getTime();
+                })[0];
+                if (newest) {
+                    const matchedKey = newest.name.slice(pathPrefix.length + 1, -(fileName.length + 1));
+                    core.info(`Found file on bucket: ${bucket} with key: ${newest.name}`);
+                    return { key: matchedKey, path: newest.name, bucket };
+                }
             }
         }
         return undefined;
