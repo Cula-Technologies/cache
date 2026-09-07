@@ -47,5 +47,4 @@ export function clearInputs(): void {
     delete process.env[getInputName(Inputs.GCSPathPrefix)];
     delete process.env[getInputName(Inputs.WIFProvider)];
     delete process.env[getInputName(Inputs.ServiceAccount)];
-    delete process.env[getInputName(Inputs.FallbackToGitHub)];
 }

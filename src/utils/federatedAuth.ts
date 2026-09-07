@@ -5,6 +5,7 @@ import {
 } from "google-auth-library";
 
 import { Inputs } from "../constants";
+import { getPipelineTierConfig } from "./pipelineTier";
 
 interface FederationConfig {
     wifProvider: string;
@@ -24,7 +25,17 @@ function getFederationConfig(): FederationConfig | undefined {
     const serviceAccount = core.getInput(Inputs.ServiceAccount);
 
     if (!wifProvider && !serviceAccount) {
-        return undefined;
+        // No explicit identity, so use this run's trust tier if the workflow
+        // is wired up for it. That is the path every caller takes: the tier
+        // buckets grant the runner's ambient identity nothing, so a run has
+        // to federate, and nothing but the environment says as whom.
+        const tiered = getPipelineTierConfig();
+        return tiered
+            ? {
+                  wifProvider: tiered.wifProvider,
+                  serviceAccount: tiered.serviceAccount
+              }
+            : undefined;
     }
     if (!wifProvider || !serviceAccount) {
         core.warning(
@@ -37,10 +48,11 @@ function getFederationConfig(): FederationConfig | undefined {
 }
 
 /**
- * An auth client for `service-account`, obtained by exchanging this workflow
- * run's OIDC token through Workload Identity Federation. Returns undefined
- * when no federation inputs were given, which is every existing caller: the
- * Storage client then uses Application Default Credentials exactly as before.
+ * An auth client for the service account, obtained by exchanging this
+ * workflow run's OIDC token through Workload Identity Federation. The account
+ * comes from the wif-provider/service-account inputs, or failing those from
+ * this run's trust tier. Returns undefined when neither is configured, and
+ * the Storage client then uses Application Default Credentials as before.
  *
  * Built as an external account credential rather than a hand-rolled STS
  * exchange, so google-auth-library owns the token refresh and the service

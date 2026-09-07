@@ -1,11 +1,10 @@
-import * as cache from "@actions/cache";
 import * as core from "@actions/core";
 
 import { Events, Inputs, RefKey } from "../src/constants";
 import { saveImpl } from "../src/saveImpl";
 import { StateProvider } from "../src/stateProvider";
 import * as actionUtils from "../src/utils/actionUtils";
-import * as gcsCache from "../src/utils/gcsCache";
+import * as cache from "../src/utils/gcsCache";
 import * as testUtils from "../src/utils/testUtils";
 
 jest.mock("@actions/core");
@@ -157,14 +156,7 @@ test("save on GHES with AC available", async () => {
     await saveImpl(new StateProvider());
 
     expect(saveCacheMock).toHaveBeenCalledTimes(1);
-    expect(saveCacheMock).toHaveBeenCalledWith(
-        [inputPath],
-        primaryKey,
-        {
-            uploadChunkSize: 4000000
-        },
-        false
-    );
+    expect(saveCacheMock).toHaveBeenCalledWith([inputPath], primaryKey);
 
     expect(failedMock).toHaveBeenCalledTimes(0);
 });
@@ -208,116 +200,6 @@ test("save with missing input outputs warning", async () => {
     expect(failedMock).toHaveBeenCalledTimes(0);
 });
 
-test("save with large cache outputs warning", async () => {
-    const logWarningMock = jest.spyOn(actionUtils, "logWarning");
-    const failedMock = jest.spyOn(core, "setFailed");
-
-    const primaryKey = "Linux-node-bb828da54c148048dd17899ba9fda624811cfb43";
-    const savedCacheKey = "Linux-node-";
-
-    mockState({ CACHE_KEY: primaryKey, CACHE_RESULT: savedCacheKey });
-
-    const inputPath = "node_modules";
-    testUtils.setInput(Inputs.Path, inputPath);
-
-    const saveCacheMock = jest
-        .spyOn(cache, "saveCache")
-        .mockImplementationOnce(() => {
-            throw new Error(
-                "Cache size of ~6144 MB (6442450944 B) is over the 5GB limit, not saving cache."
-            );
-        });
-
-    await saveImpl(new StateProvider());
-
-    expect(saveCacheMock).toHaveBeenCalledTimes(1);
-    expect(saveCacheMock).toHaveBeenCalledWith(
-        [inputPath],
-        primaryKey,
-        expect.anything(),
-        false
-    );
-
-    expect(logWarningMock).toHaveBeenCalledTimes(1);
-    expect(logWarningMock).toHaveBeenCalledWith(
-        "Cache size of ~6144 MB (6442450944 B) is over the 5GB limit, not saving cache."
-    );
-    expect(failedMock).toHaveBeenCalledTimes(0);
-});
-
-test("save with reserve cache failure outputs warning", async () => {
-    const logWarningMock = jest.spyOn(actionUtils, "logWarning");
-    const failedMock = jest.spyOn(core, "setFailed");
-
-    const primaryKey = "Linux-node-bb828da54c148048dd17899ba9fda624811cfb43";
-    const savedCacheKey = "Linux-node-";
-
-    mockState({ CACHE_KEY: primaryKey, CACHE_RESULT: savedCacheKey });
-
-    const inputPath = "node_modules";
-    testUtils.setInput(Inputs.Path, inputPath);
-
-    const saveCacheMock = jest
-        .spyOn(cache, "saveCache")
-        .mockImplementationOnce(() => {
-            const actualCache = jest.requireActual("@actions/cache");
-            const error = new actualCache.ReserveCacheError(
-                `Unable to reserve cache with key ${primaryKey}, another job may be creating this cache.`
-            );
-            throw error;
-        });
-
-    await saveImpl(new StateProvider());
-
-    expect(saveCacheMock).toHaveBeenCalledTimes(1);
-    expect(saveCacheMock).toHaveBeenCalledWith(
-        [inputPath],
-        primaryKey,
-        expect.anything(),
-        false
-    );
-
-    expect(logWarningMock).toHaveBeenCalledWith(
-        `Unable to reserve cache with key ${primaryKey}, another job may be creating this cache.`
-    );
-    expect(logWarningMock).toHaveBeenCalledTimes(1);
-    expect(failedMock).toHaveBeenCalledTimes(0);
-});
-
-test("save with server error outputs warning", async () => {
-    const logWarningMock = jest.spyOn(actionUtils, "logWarning");
-    const failedMock = jest.spyOn(core, "setFailed");
-
-    const primaryKey = "Linux-node-bb828da54c148048dd17899ba9fda624811cfb43";
-    const savedCacheKey = "Linux-node-";
-
-    mockState({ CACHE_KEY: primaryKey, CACHE_RESULT: savedCacheKey });
-
-    const inputPath = "node_modules";
-    testUtils.setInput(Inputs.Path, inputPath);
-
-    const saveCacheMock = jest
-        .spyOn(cache, "saveCache")
-        .mockImplementationOnce(() => {
-            throw new Error("HTTP Error Occurred");
-        });
-
-    await saveImpl(new StateProvider());
-
-    expect(saveCacheMock).toHaveBeenCalledTimes(1);
-    expect(saveCacheMock).toHaveBeenCalledWith(
-        [inputPath],
-        primaryKey,
-        expect.anything(),
-        false
-    );
-
-    expect(logWarningMock).toHaveBeenCalledTimes(1);
-    expect(logWarningMock).toHaveBeenCalledWith("HTTP Error Occurred");
-
-    expect(failedMock).toHaveBeenCalledTimes(0);
-});
-
 test("save with valid inputs uploads a cache", async () => {
     const failedMock = jest.spyOn(core, "setFailed");
 
@@ -340,14 +222,7 @@ test("save with valid inputs uploads a cache", async () => {
     await saveImpl(new StateProvider());
 
     expect(saveCacheMock).toHaveBeenCalledTimes(1);
-    expect(saveCacheMock).toHaveBeenCalledWith(
-        [inputPath],
-        primaryKey,
-        {
-            uploadChunkSize: 4000000
-        },
-        false
-    );
+    expect(saveCacheMock).toHaveBeenCalledWith([inputPath], primaryKey);
 
     expect(failedMock).toHaveBeenCalledTimes(0);
 });
@@ -363,45 +238,13 @@ test("save with exact match restored from GCS returns early", async () => {
         CACHE_SOURCE: "gcs"
     });
     testUtils.setInput(Inputs.Path, "node_modules");
-    const gcsSaveMock = jest.spyOn(gcsCache, "saveCache");
+    const gcsSaveMock = jest.spyOn(cache, "saveCache");
 
     await saveImpl(new StateProvider());
 
     expect(gcsSaveMock).toHaveBeenCalledTimes(0);
     expect(infoMock).toHaveBeenCalledWith(
         `Cache hit occurred on the primary key ${primaryKey}, not saving cache.`
-    );
-});
-
-test("save with exact match restored from the GitHub cache backfills GCS", async () => {
-    const infoMock = jest.spyOn(core, "info");
-    jest.spyOn(actionUtils, "isGCSAvailable").mockImplementation(() => true);
-
-    const primaryKey = "Linux-node-bb828da54c148048dd17899ba9fda624811cfb43";
-    mockState({
-        CACHE_KEY: primaryKey,
-        CACHE_RESULT: primaryKey,
-        CACHE_SOURCE: "github"
-    });
-    const inputPath = "node_modules";
-    testUtils.setInput(Inputs.Path, inputPath);
-    testUtils.setInput(Inputs.UploadChunkSize, "4000000");
-    const gcsSaveMock = jest
-        .spyOn(gcsCache, "saveCache")
-        .mockImplementation(() => Promise.resolve(1));
-
-    await saveImpl(new StateProvider());
-
-    expect(gcsSaveMock).toHaveBeenCalledTimes(1);
-    expect(gcsSaveMock).toHaveBeenCalledWith(
-        [inputPath],
-        primaryKey,
-        { uploadChunkSize: 4000000 },
-        false,
-        false // GitHub already holds the entry: GCS only
-    );
-    expect(infoMock).toHaveBeenCalledWith(
-        `Cache hit on the primary key ${primaryKey} came from the GitHub cache, saving it to GCS.`
     );
 });
 
@@ -422,52 +265,6 @@ test("save with empty path input uses the paths recorded by restore", async () =
     expect(saveCacheMock).toHaveBeenCalledTimes(1);
     expect(saveCacheMock).toHaveBeenCalledWith(
         ["node_modules", "~/.cache/Cypress"],
-        primaryKey,
-        { uploadChunkSize: 4000000 },
-        false
+        primaryKey
     );
-});
-
-describe("fallback-to-github", () => {
-    const primaryKey = "Linux-node-bb828da54c148048dd17899ba9fda624811cfb43";
-
-    function arrange(): jest.SpyInstance {
-        // No restored key: a miss, so the save actually runs.
-        mockState({ CACHE_KEY: primaryKey, CACHE_RESULT: "" });
-        testUtils.setInput(Inputs.Path, "node_modules");
-        return jest.spyOn(gcsCache, "saveCache").mockResolvedValue(1);
-    }
-
-    test("defaults to true when the input is absent", async () => {
-        const saveMock = arrange();
-
-        await saveImpl(new StateProvider());
-
-        // The guard that matters: core.getInput returns "" for an absent
-        // input, and getInputAsBool("") is false — so without the explicit
-        // default this would silently stop falling back for every existing
-        // caller.
-        expect(saveMock).toHaveBeenCalledWith(
-            ["node_modules"],
-            primaryKey,
-            expect.anything(),
-            expect.anything(),
-            true
-        );
-    });
-
-    test("passes false through so a targeted save cannot land elsewhere", async () => {
-        const saveMock = arrange();
-        testUtils.setInput(Inputs.FallbackToGitHub, "false");
-
-        await saveImpl(new StateProvider());
-
-        expect(saveMock).toHaveBeenCalledWith(
-            ["node_modules"],
-            primaryKey,
-            expect.anything(),
-            expect.anything(),
-            false
-        );
-    });
 });

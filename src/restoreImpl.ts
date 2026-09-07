@@ -37,22 +37,17 @@ export async function restoreImpl(
             required: true
         });
         stateProvider.setState(State.CachePaths, cachePaths.join("\n"));
-        const enableCrossOsArchive = utils.getInputAsBool(
-            Inputs.EnableCrossOsArchive
-        );
         const failOnCacheMiss = utils.getInputAsBool(Inputs.FailOnCacheMiss);
         const lookupOnly = utils.getInputAsBool(Inputs.LookupOnly);
 
-        const restored = await cache.restoreCache(
+        const cacheKey = await cache.restoreCache(
             cachePaths,
             primaryKey,
             restoreKeys,
-            { lookupOnly: lookupOnly },
-            enableCrossOsArchive
+            { lookupOnly: lookupOnly }
         );
-        const cacheKey = restored?.key;
 
-        if (!restored || !cacheKey) {
+        if (!cacheKey) {
             // `cache-hit` is intentionally not set to `false` here to preserve existing behavior
             // See https://github.com/actions/cache/issues/1466
 
@@ -70,9 +65,8 @@ export async function restoreImpl(
             return;
         }
 
-        // Store the matched cache key and its backend in states
+        // Store the matched cache key in state
         stateProvider.setState(State.CacheMatchedKey, cacheKey);
-        stateProvider.setState(State.CacheSource, restored.source);
 
         const isExactKeyMatch = utils.isExactKeyMatch(
             core.getInput(Inputs.Key, { required: true }),

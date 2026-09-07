@@ -1,3 +1,4 @@
+import * as core from "@actions/core";
 import { Storage } from "@google-cloud/storage";
 
 import * as actionUtils from "../src/utils/actionUtils";
@@ -74,4 +75,23 @@ test("a key the bucket does not hold is uploaded", async () => {
         expect.any(String),
         expect.objectContaining({ destination: OBJECT })
     );
+});
+
+test("no bucket configured fails the step rather than falling back", async () => {
+    // There is no second destination any more, so a missing bucket is a
+    // configuration bug and says so. Previously this silently wrote to the
+    // GitHub Actions cache, which cannot hold a working set this size and
+    // would then be served to later jobs in preference to GCS.
+    jest.mocked(actionUtils.isGCSAvailable).mockReturnValue(false);
+    const failed = jest
+        .spyOn(core, "setFailed")
+        .mockImplementation(() => undefined);
+    mockStorage([]);
+
+    await expect(saveCache(["some/path"], KEY)).resolves.toBe(-1);
+
+    expect(failed).toHaveBeenCalledWith(
+        expect.stringContaining("No GCS bucket configured")
+    );
+    expect(upload).not.toHaveBeenCalled();
 });
