@@ -19,12 +19,15 @@ inputs:
     description: >
       Google Cloud Storage bucket(s) to use as the cache backend. May name
       several, one per line or comma separated: a restore walks them in the
-      given order, while a save only ever writes the first. That lets a caller
-      read from a bucket it may only read while writing solely to its own.
-      Within a restore, key quality outranks bucket order — every bucket is
-      tried for the primary key before any is tried for a restore-key prefix.
-      Defaults to the CULA_CACHE_GCS_BUCKET or CONFIGURED_GCS_BUCKET
-      environment variable when omitted.
+      given order, while a save only ever writes the first. Within a restore,
+      key quality outranks bucket order — every bucket is tried for the
+      primary key before any is tried for a restore-key prefix.
+
+      Optional. With the CULA_PIPELINE_* environment set, this run's trust
+      tier supplies the buckets instead: own tier first, then the tiers it may
+      read. Failing both, CULA_CACHE_GCS_BUCKET or CONFIGURED_GCS_BUCKET.
+      There is no GitHub Actions cache fallback — if no bucket can be
+      resolved, the step fails.
     required: false
   gcs-bucket:
     description: >
@@ -39,28 +42,18 @@ inputs:
     required: false
   wif-provider:
     description: >
-      Optional Workload Identity Federation provider resource name, e.g.
-      projects/123/locations/global/workloadIdentityPools/pool/providers/gh.
-      When set together with service-account, this run's OIDC token is
-      exchanged for that service account and the GCS bucket is read and
-      written as it, instead of as the runner's ambient credentials. The job
+      Optional Workload Identity Federation provider resource name. With
+      service-account, this run's OIDC token is exchanged for that account and
+      the bucket is read and written as it, rather than as the runner's
+      ambient credentials. Both are derived from the CULA_PIPELINE_*
+      environment when omitted, so a wired-up workflow needs neither. The job
       must grant `permissions: id-token: write`.
     required: false
   service-account:
     description: >
-      Service account to impersonate through wif-provider. Required when
-      wif-provider is set, and ignored without it.
+      Service account to impersonate through wif-provider. Derived from the
+      CULA_PIPELINE_* environment and this run's trust tier when omitted.
     required: false
-  fallback-to-github:
-    description: >
-      Whether to save to the GitHub Actions cache when the GCS save fails.
-      Defaults to true, which is the actions/cache behaviour. Set false when
-      the point of the step is to land in one specific bucket: a fallback
-      would otherwise report success from the wrong destination, and the entry
-      it writes gets served from GitHub by later restores so GCS never
-      receives the key.
-    required: false
-    default: 'true'
 runs:
   using: 'node24'
   main: '../dist/save-only/index.js'

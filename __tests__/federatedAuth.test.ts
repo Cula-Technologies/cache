@@ -12,12 +12,19 @@ const OIDC_VARS = [
     "ACTIONS_ID_TOKEN_REQUEST_URL",
     "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 ];
+const TIER_VARS = [
+    "GITHUB_REF",
+    "CULA_PIPELINE_BUCKET_PREFIX",
+    "CULA_PIPELINE_BUCKET_LOCATION",
+    "CULA_PIPELINE_PROJECT",
+    "CULA_PIPELINE_WIF_PROVIDER"
+];
 const INPUT_VARS = ["INPUT_WIF-PROVIDER", "INPUT_SERVICE-ACCOUNT"];
 
 let warning: jest.SpyInstance;
 
 beforeEach(() => {
-    for (const name of [...OIDC_VARS, ...INPUT_VARS]) {
+    for (const name of [...OIDC_VARS, ...INPUT_VARS, ...TIER_VARS]) {
         delete process.env[name];
     }
     warning = jest.spyOn(core, "warning").mockImplementation(() => undefined);
@@ -69,4 +76,47 @@ test("both inputs plus an OIDC endpoint build an impersonating client", () => {
         "https://www.googleapis.com/auth/cloud-platform"
     ]);
     expect(warning).not.toHaveBeenCalled();
+});
+
+describe("identity from the trust tier", () => {
+    function configureTier(): void {
+        process.env["GITHUB_REF"] = "refs/heads/develop";
+        process.env["CULA_PIPELINE_BUCKET_PREFIX"] = "pipe";
+        process.env["CULA_PIPELINE_BUCKET_LOCATION"] = "ew3";
+        process.env["CULA_PIPELINE_PROJECT"] = "proj";
+        process.env["CULA_PIPELINE_WIF_PROVIDER"] = PROVIDER;
+    }
+
+    test("with no inputs, the tier supplies the identity", () => {
+        configureTier();
+        withOidcEndpoint();
+
+        // This is the path every call site takes now: the tier buckets grant
+        // the runner's ambient identity nothing, so a run must federate, and
+        // only the environment says as whom.
+        const client = getFederatedAuthClient();
+
+        expect(client).toBeDefined();
+        expect(warning).not.toHaveBeenCalled();
+    });
+
+    test("explicit inputs still outrank the tier", () => {
+        configureTier();
+        withOidcEndpoint();
+        process.env["INPUT_WIF-PROVIDER"] = PROVIDER;
+        process.env["INPUT_SERVICE-ACCOUNT"] =
+            "chosen@example.iam.gserviceaccount.com";
+
+        expect(getFederatedAuthClient()).toBeDefined();
+        expect(warning).not.toHaveBeenCalled();
+    });
+
+    test("the tier without an OIDC endpoint falls back, loudly", () => {
+        configureTier();
+
+        expect(getFederatedAuthClient()).toBeUndefined();
+        expect(warning).toHaveBeenCalledWith(
+            expect.stringContaining("id-token: write")
+        );
+    });
 });

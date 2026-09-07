@@ -1,4 +1,3 @@
-import * as cache from "@actions/cache";
 import * as core from "@actions/core";
 
 import { Events, Inputs, RefKey } from "../src/constants";
@@ -6,7 +5,6 @@ import * as actionUtils from "../src/utils/actionUtils";
 import * as testUtils from "../src/utils/testUtils";
 
 jest.mock("@actions/core");
-jest.mock("@actions/cache");
 
 let pristineEnv: NodeJS.ProcessEnv;
 
@@ -263,42 +261,25 @@ test("getGCSBucket returns empty string without input or environment variable", 
     }
 });
 
-test("isCacheFeatureAvailable for ac enabled", () => {
-    jest.spyOn(cache, "isFeatureAvailable").mockImplementation(() => true);
-
-    expect(actionUtils.isCacheFeatureAvailable()).toBe(true);
-});
-
-test("isCacheFeatureAvailable for ac disabled on GHES", () => {
-    jest.spyOn(cache, "isFeatureAvailable").mockImplementation(() => false);
-
-    const message = `Cache action is only supported on GHES version >= 3.5. If you are on version >=3.5 Please check with GHES admin if Actions cache service is enabled or not.
-Otherwise please upgrade to GHES version >= 3.5 and If you are also using Github Connect, please unretire the actions/cache namespace before upgrade (see https://docs.github.com/en/enterprise-server@3.5/admin/github-actions/managing-access-to-actions-from-githubcom/enabling-automatic-access-to-githubcom-actions-using-github-connect#automatic-retirement-of-namespaces-for-actions-accessed-on-githubcom)`;
-    const infoMock = jest.spyOn(core, "info");
-
+test("isCacheFeatureAvailable is true when a bucket is configured", () => {
+    process.env["CULA_CACHE_GCS_BUCKET"] = "some-bucket";
     try {
-        process.env["GITHUB_SERVER_URL"] = "http://example.com";
-        expect(actionUtils.isCacheFeatureAvailable()).toBe(false);
-        expect(infoMock).toHaveBeenCalledWith(`[warning]${message}`);
+        expect(actionUtils.isCacheFeatureAvailable()).toBe(true);
     } finally {
-        delete process.env["GITHUB_SERVER_URL"];
+        delete process.env["CULA_CACHE_GCS_BUCKET"];
     }
 });
 
-test("isCacheFeatureAvailable for ac disabled on dotcom", () => {
-    jest.spyOn(cache, "isFeatureAvailable").mockImplementation(() => false);
-
-    const message =
-        "An internal error has occurred in cache backend. Please check https://www.githubstatus.com/ for any ongoing issue in actions.";
+test("isCacheFeatureAvailable is false, and says why, with no bucket", () => {
+    // GCS is the only backend now, so this is a configuration error rather
+    // than a cache-service outage. The GHES and githubstatus.com advice this
+    // used to print was about GitHub's cache service, no longer consulted.
     const infoMock = jest.spyOn(core, "info");
 
-    try {
-        process.env["GITHUB_SERVER_URL"] = "http://github.com";
-        expect(actionUtils.isCacheFeatureAvailable()).toBe(false);
-        expect(infoMock).toHaveBeenCalledWith(`[warning]${message}`);
-    } finally {
-        delete process.env["GITHUB_SERVER_URL"];
-    }
+    expect(actionUtils.isCacheFeatureAvailable()).toBe(false);
+    expect(infoMock).toHaveBeenCalledWith(
+        expect.stringContaining("No GCS bucket configured")
+    );
 });
 
 test("isGhes returns false when the GITHUB_SERVER_URL environment variable is not defined", async () => {
@@ -329,7 +310,16 @@ test("isGhes returns true when the GITHUB_SERVER_URL environment variable is set
 describe("getGCSBuckets", () => {
     afterEach(() => {
         testUtils.clearInputs();
-        delete process.env["CULA_CACHE_GCS_BUCKET"];
+        for (const name of [
+            "CULA_CACHE_GCS_BUCKET",
+            "GITHUB_REF",
+            "CULA_PIPELINE_BUCKET_PREFIX",
+            "CULA_PIPELINE_BUCKET_LOCATION",
+            "CULA_PIPELINE_PROJECT",
+            "CULA_PIPELINE_WIF_PROVIDER"
+        ]) {
+            delete process.env[name];
+        }
     });
 
     test("a single bucket is unchanged", () => {
@@ -375,6 +365,56 @@ describe("getGCSBuckets", () => {
         testUtils.setInput(Inputs.GCSBuckets, "new-name");
         testUtils.setInput(Inputs.GCSBucket, "old-name");
         expect(actionUtils.getGCSBuckets()).toEqual(["new-name"]);
+    });
+
+    test("the trust tier supplies the buckets when no input does", () => {
+        process.env["GITHUB_REF"] = "refs/pull/9/merge";
+        process.env["CULA_PIPELINE_BUCKET_PREFIX"] = "pipe";
+        process.env["CULA_PIPELINE_BUCKET_LOCATION"] = "ew3";
+        process.env["CULA_PIPELINE_PROJECT"] = "proj";
+        process.env["CULA_PIPELINE_WIF_PROVIDER"] = "projects/1/x";
+
+        expect(actionUtils.getGCSBuckets()).toEqual([
+            "pipe-pr-cache-ew3",
+            "pipe-develop-cache-ew3",
+            "pipe-main-cache-ew3"
+        ]);
+        // A save writes the first, which is always the run's own tier.
+        expect(actionUtils.getGCSBucket()).toBe("pipe-pr-cache-ew3");
+    });
+
+    test("an explicit input outranks the trust tier", () => {
+        process.env["GITHUB_REF"] = "refs/heads/develop";
+        process.env["CULA_PIPELINE_BUCKET_PREFIX"] = "pipe";
+        process.env["CULA_PIPELINE_BUCKET_LOCATION"] = "ew3";
+        process.env["CULA_PIPELINE_PROJECT"] = "proj";
+        process.env["CULA_PIPELINE_WIF_PROVIDER"] = "projects/1/x";
+        testUtils.setInput(Inputs.GCSBuckets, "chosen-by-hand");
+
+        expect(actionUtils.getGCSBuckets()).toEqual(["chosen-by-hand"]);
+    });
+
+    test("the tier outranks the legacy single-bucket variable", () => {
+        process.env["CULA_CACHE_GCS_BUCKET"] = "legacy";
+        process.env["GITHUB_REF"] = "refs/heads/main";
+        process.env["CULA_PIPELINE_BUCKET_PREFIX"] = "pipe";
+        process.env["CULA_PIPELINE_BUCKET_LOCATION"] = "ew3";
+        process.env["CULA_PIPELINE_PROJECT"] = "proj";
+        process.env["CULA_PIPELINE_WIF_PROVIDER"] = "projects/1/x";
+
+        expect(actionUtils.getGCSBuckets()[0]).toBe("pipe-main-cache-ew3");
+    });
+
+    test("unsetting one pipeline variable rolls back to the legacy bucket", () => {
+        // This is the rollback path, so it is worth a test of its own: drop
+        // the prefix and every caller returns to one bucket.
+        process.env["CULA_CACHE_GCS_BUCKET"] = "legacy";
+        process.env["GITHUB_REF"] = "refs/heads/main";
+        process.env["CULA_PIPELINE_BUCKET_LOCATION"] = "ew3";
+        process.env["CULA_PIPELINE_PROJECT"] = "proj";
+        process.env["CULA_PIPELINE_WIF_PROVIDER"] = "projects/1/x";
+
+        expect(actionUtils.getGCSBuckets()).toEqual(["legacy"]);
     });
 
     test("a save targets the first bucket only", () => {

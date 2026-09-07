@@ -1,7 +1,7 @@
-import * as cache from "@actions/cache";
 import * as core from "@actions/core";
 
 import { Inputs, RefKey } from "../constants";
+import { getPipelineTierConfig } from "./pipelineTier";
 
 export function isGhes(): boolean {
     const ghUrl = new URL(
@@ -69,18 +69,25 @@ export function getInputAsBool(
 /**
  * Buckets to consider, in the caller's order of preference.
  *
- * `gcs-buckets` may name several, one per line or comma separated. A restore
+ * `gcs-buckets` may name several, one per line or comma separated, and when
+ * it is omitted the trust tier supplies them (see ./pipelineTier). A restore
  * walks them in order; a save only ever writes the first. That is what lets a
- * caller read from buckets it may only read — a more-trusted tier's cache, say
- * — while writing solely to its own.
+ * caller read from buckets it may only read — a more-trusted tier's cache —
+ * while writing solely to its own.
  */
 export function getGCSBuckets(): string[] {
+    // An explicit input wins, then this run's trust tier, then the legacy
+    // single-bucket environment. That last rung is the rollback: unset
+    // CULA_PIPELINE_BUCKET_PREFIX and every caller returns to one bucket
+    // without touching a workflow's cache steps.
+    const tiered = getPipelineTierConfig();
     const configured =
         core.getInput(Inputs.GCSBuckets) ||
         // The singular alias, for callers not yet updated — notably
         // Cula-Technologies/checkout, which passes gcs-bucket through to
         // restore and save.
         core.getInput(Inputs.GCSBucket) ||
+        tiered?.buckets.join("\n") ||
         process.env["CULA_CACHE_GCS_BUCKET"] ||
         process.env["CONFIGURED_GCS_BUCKET"] ||
         "";
@@ -128,26 +135,16 @@ export function isGCSAvailable(): boolean {
 }
 
 export function isCacheFeatureAvailable(): boolean {
-    // Check if GCS cache is available
     if (isGCSAvailable()) {
         return true;
     }
 
-    // Otherwise, check GitHub cache
-    if (cache.isFeatureAvailable()) {
-        return true;
-    }
-
-    if (isGhes()) {
-        logWarning(
-            `Cache action is only supported on GHES version >= 3.5. If you are on version >=3.5 Please check with GHES admin if Actions cache service is enabled or not.
-Otherwise please upgrade to GHES version >= 3.5 and If you are also using Github Connect, please unretire the actions/cache namespace before upgrade (see https://docs.github.com/en/enterprise-server@3.5/admin/github-actions/managing-access-to-actions-from-githubcom/enabling-automatic-access-to-githubcom-actions-using-github-connect#automatic-retirement-of-namespaces-for-actions-accessed-on-githubcom)`
-        );
-        return false;
-    }
-
+    // GCS is the only backend, so this is a configuration error rather than a
+    // service outage. The GHES and githubstatus.com advice this used to print
+    // was about GitHub's cache service, which is no longer consulted.
     logWarning(
-        "An internal error has occurred in cache backend. Please check https://www.githubstatus.com/ for any ongoing issue in actions."
+        "No GCS bucket configured: set gcs-buckets, or the CULA_PIPELINE_* " +
+            "environment, or CULA_CACHE_GCS_BUCKET."
     );
     return false;
 }

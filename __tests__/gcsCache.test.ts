@@ -1,7 +1,6 @@
 import * as cache from "@actions/cache";
 import { Storage } from "@google-cloud/storage";
 
-import { CacheSource } from "../src/constants";
 import * as actionUtils from "../src/utils/actionUtils";
 import { restoreCache } from "../src/utils/gcsCache";
 
@@ -102,10 +101,7 @@ test("primary key exact match returns primary key", async () => {
         lookupOnly: true
     });
 
-    expect(result?.key).toBe("nx-abc123");
-    // Assert the source too: it is the field #4 added and these tests did not
-    // cover, which is why merging the two branches broke this file quietly.
-    expect(result?.source).toBe(CacheSource.GCS);
+    expect(result).toBe("nx-abc123");
 });
 
 test("restore key prefix-matches and returns newest entry's key", async () => {
@@ -124,7 +120,7 @@ test("restore key prefix-matches and returns newest entry's key", async () => {
         lookupOnly: true
     });
 
-    expect(result?.key).toBe("nx-newer00");
+    expect(result).toBe("nx-newer00");
 });
 
 test("restore key ignores objects with other compression suffix", async () => {
@@ -140,7 +136,6 @@ test("restore key ignores objects with other compression suffix", async () => {
     });
 
     expect(result).toBeUndefined();
-    expect(cache.restoreCache).toHaveBeenCalled();
 });
 
 test("restore keys are tried in order", async () => {
@@ -162,24 +157,7 @@ test("restore keys are tried in order", async () => {
         { lookupOnly: true }
     );
 
-    expect(result?.key).toBe("preferred-key");
-});
-
-test("no match falls back to GitHub cache", async () => {
-    mockStorage([]);
-
-    const result = await restoreCache(["some/path"], "nx-abc123", ["nx-"], {
-        lookupOnly: true
-    });
-
-    expect(result).toBeUndefined();
-    expect(cache.restoreCache).toHaveBeenCalledWith(
-        ["some/path"],
-        "nx-abc123",
-        ["nx-"],
-        { lookupOnly: true },
-        undefined
-    );
+    expect(result).toBe("preferred-key");
 });
 
 test("keys containing slashes resolve to the full matched key", async () => {
@@ -194,7 +172,7 @@ test("keys containing slashes resolve to the full matched key", async () => {
         "develop/"
     ]);
 
-    expect(result?.key).toBe("develop/nx-abc");
+    expect(result).toBe("develop/nx-abc");
 });
 
 describe("multiple buckets", () => {
@@ -219,7 +197,7 @@ describe("multiple buckets", () => {
 
         // Bucket order must not win here: `nx-older0` is different content,
         // while the upstream hit is exactly what was asked for.
-        expect(result?.key).toBe("nx-abc123");
+        expect(result).toBe("nx-abc123");
     });
 
     test("the earlier bucket wins when both hold the exact key", async () => {
@@ -232,8 +210,7 @@ describe("multiple buckets", () => {
             lookupOnly: true
         });
 
-        expect(result?.key).toBe("nx-abc123");
-        expect(result?.source).toBe(CacheSource.GCS);
+        expect(result).toBe("nx-abc123");
     });
 
     test("a prefix match falls through to the next bucket", async () => {
@@ -246,7 +223,7 @@ describe("multiple buckets", () => {
             lookupOnly: true
         });
 
-        expect(result?.key).toBe("nx-older0");
+        expect(result).toBe("nx-older0");
     });
 
     test("no bucket holding anything is still a miss", async () => {

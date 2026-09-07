@@ -1,4 +1,3 @@
-import * as cache from "@actions/cache";
 import * as utils from "@actions/cache/lib/internal/cacheUtils";
 import { CompressionMethod } from "@actions/cache/lib/internal/constants";
 import {
@@ -6,21 +5,16 @@ import {
     extractTar,
     listTar
 } from "@actions/cache/lib/internal/tar";
-import { DownloadOptions, UploadOptions } from "@actions/cache/lib/options";
+import { DownloadOptions } from "@actions/cache/lib/options";
 import * as core from "@actions/core";
 import { Storage } from "@google-cloud/storage";
 import * as path from "path";
 
-import { CacheSource, Inputs } from "../constants";
+import { Inputs } from "../constants";
 import { getGCSBucket, getGCSBuckets, isGCSAvailable } from "./actionUtils";
 import { getFederatedAuthClient } from "./federatedAuth";
 
 const DEFAULT_PATH_PREFIX = "github-cache";
-
-export interface RestoreResult {
-    key: string;
-    source: CacheSource;
-}
 
 // Initializes the GCS client. Uses Application Default Credentials unless
 // wif-provider and service-account were given, in which case the run
@@ -39,93 +33,123 @@ function getGCSClient(): Storage | null {
     }
 }
 
+/**
+ * The key constraints @actions/cache enforced. They came with GitHub's cache
+ * API, and removing that backend removed the only code that checked them —
+ * but two still earn their place here: a comma would collide with the
+ * separator `gcs-buckets` uses, and the restore-key limit bounds a prefix
+ * scan that now runs once per bucket in the read chain rather than once.
+ */
+const MAX_KEY_LENGTH = 512;
+const MAX_RESTORE_KEYS = 10;
+
+function validateKeys(keys: string[]): void {
+    if (keys.length > MAX_RESTORE_KEYS) {
+        throw new Error(
+            `Key Validation Error: Keys are limited to a maximum of ${MAX_RESTORE_KEYS}.`
+        );
+    }
+    for (const key of keys) {
+        if (key.length > MAX_KEY_LENGTH) {
+            throw new Error(
+                `Key Validation Error: ${key} cannot be larger than ${MAX_KEY_LENGTH} characters.`
+            );
+        }
+        if (key.includes(",")) {
+            throw new Error(
+                `Key Validation Error: ${key} cannot contain commas.`
+            );
+        }
+    }
+}
+
+/**
+ * Restores from GCS. There is deliberately no GitHub Actions cache fallback:
+ * an entry here is 0.5–1.6 GiB against a 10 GB repo-wide quota, so falling
+ * back cannot hold the working set, and an entry that lands there is served to
+ * later jobs in preference — meaning GCS never receives the key at all.
+ *
+ * A miss returns undefined, which is ordinary: the caller does the work and
+ * saves. A transport failure is a different thing and fails the step, because
+ * a cache that silently stopped working is the expensive kind of broken.
+ */
 export async function restoreCache(
     paths: string[],
     primaryKey: string,
     restoreKeys?: string[],
-    options?: DownloadOptions,
-    enableCrossOsArchive?: boolean
-): Promise<RestoreResult | undefined> {
-    // Check if GCS is available
-    if (isGCSAvailable()) {
-        try {
-            const result = await restoreFromGCS(
-                paths,
-                primaryKey,
-                restoreKeys,
-                options
-            );
+    options?: DownloadOptions
+): Promise<string | undefined> {
+    validateKeys([primaryKey, ...(restoreKeys ?? [])]);
 
-            if (result) {
-                core.info(`Cache restored from GCS with key: ${result}`);
-                return { key: result, source: CacheSource.GCS };
-            }
-
-            core.info("Cache not found in GCS, falling back to GitHub cache");
-        } catch (error) {
-            core.warning(
-                `Failed to restore from GCS: ${(error as Error).message}`
-            );
-            core.info("Falling back to GitHub cache");
-        }
-    } else {
-        core.info("GCS not configured, using GitHub cache");
+    if (!isGCSAvailable()) {
+        core.setFailed(
+            "No GCS bucket configured: set gcs-buckets, or the " +
+                "CULA_PIPELINE_* environment, or CULA_CACHE_GCS_BUCKET."
+        );
+        return undefined;
     }
 
-    // Fall back to GitHub cache
-    const key = await cache.restoreCache(
-        paths,
-        primaryKey,
-        restoreKeys,
-        options,
-        enableCrossOsArchive
-    );
-    return key ? { key, source: CacheSource.GitHub } : undefined;
+    try {
+        const result = await restoreFromGCS(
+            paths,
+            primaryKey,
+            restoreKeys,
+            options
+        );
+
+        if (result) {
+            core.info(`Cache restored from GCS with key: ${result}`);
+            return result;
+        }
+
+        core.info("Cache not found in GCS");
+        return undefined;
+    } catch (error) {
+        core.setFailed(
+            `Failed to restore from GCS: ${(error as Error).message}`
+        );
+        return undefined;
+    }
 }
 
 /**
- * Saves to GCS when it is configured, otherwise (or when the GCS upload
- * fails) to the GitHub cache. `fallbackToGitHub: false` is for backfilling a
- * GCS miss the GitHub cache already covered: a second GitHub save would only
- * fail on the existing entry.
+ * Saves to GCS. No GitHub Actions cache fallback, for the reasons on
+ * restoreCache — and one more on this side: a fallback reports success from
+ * the wrong destination, so a broken configuration looks green.
+ *
+ * A failure fails the step. That does mean a transient GCS outage reddens an
+ * otherwise good build; the alternative is a cache that quietly stopped being
+ * written, which costs far more and for far longer. A caller that would rather
+ * absorb it can set `continue-on-error` on the step.
  */
-export async function saveCache(
-    paths: string[],
-    key: string,
-    options?: UploadOptions,
-    enableCrossOsArchive?: boolean,
-    fallbackToGitHub = true
-): Promise<number> {
-    if (isGCSAvailable()) {
-        try {
-            const result = await saveToGCS(paths, key);
-            if (result) {
-                core.info(`Cache saved to GCS with key: [${key} | ${result}]`);
-                return 1; // Success ID
-            }
+export async function saveCache(paths: string[], key: string): Promise<number> {
+    validateKeys([key]);
 
-            core.warning("Failed to save to GCS");
-        } catch (error) {
-            core.warning(`Failed to save to GCS: ${(error as Error).message}`);
-        }
-        if (!fallbackToGitHub) {
-            return -1;
-        }
-        core.info("Falling back to GitHub cache");
-    } else {
-        if (!fallbackToGitHub) {
-            return -1;
-        }
-        core.info("GCS not configured, using GitHub cache");
+    if (!isGCSAvailable()) {
+        core.setFailed(
+            "No GCS bucket configured: set gcs-buckets, or the " +
+                "CULA_PIPELINE_* environment, or CULA_CACHE_GCS_BUCKET."
+        );
+        return -1;
     }
 
-    // Fall back to GitHub cache
-    return await cache.saveCache(paths, key, options, enableCrossOsArchive);
+    try {
+        const result = await saveToGCS(paths, key);
+        if (result) {
+            core.info(`Cache saved to GCS with key: [${key} | ${result}]`);
+            return 1; // Success ID
+        }
+        core.setFailed("Failed to save to GCS");
+        return -1;
+    } catch (error) {
+        core.setFailed(`Failed to save to GCS: ${(error as Error).message}`);
+        return -1;
+    }
 }
 
-// Function that checks if the cache feature is available (either GCS or GitHub cache)
+/** GCS is the only backend, so this is simply whether it is configured. */
 export function isFeatureAvailable(): boolean {
-    return isGCSAvailable() || cache.isFeatureAvailable();
+    return isGCSAvailable();
 }
 
 async function restoreFromGCS(

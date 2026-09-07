@@ -1,6 +1,6 @@
 import * as core from "@actions/core";
 
-import { CacheSource, Events, Inputs, State } from "./constants";
+import { Events, Inputs, State } from "./constants";
 import {
     IStateProvider,
     NullStateProvider,
@@ -45,28 +45,12 @@ export async function saveImpl(
 
         // If matched restore key is same as primary key, then do not save cache
         // NO-OP in case of SaveOnly action
-        //
-        // Exception: a hit served by the GitHub fallback while GCS is
-        // configured. GCS is the primary backend, so the entry is written
-        // there too — otherwise the GitHub copy keeps every later job on the
-        // fallback and GCS never gets the key.
         const restoredKey = stateProvider.getCacheState();
-        const exactMatch = utils.isExactKeyMatch(primaryKey, restoredKey);
-        const backfillGCS =
-            exactMatch &&
-            stateProvider.getState(State.CacheSource) === CacheSource.GitHub &&
-            utils.isGCSAvailable();
-
-        if (exactMatch && !backfillGCS) {
+        if (utils.isExactKeyMatch(primaryKey, restoredKey)) {
             core.info(
                 `Cache hit occurred on the primary key ${primaryKey}, not saving cache.`
             );
             return;
-        }
-        if (backfillGCS) {
-            core.info(
-                `Cache hit on the primary key ${primaryKey} came from the GitHub cache, saving it to GCS.`
-            );
         }
 
         // Prefer the paths restore recorded: in a nested composite action the
@@ -82,30 +66,7 @@ export async function saveImpl(
             return;
         }
 
-        const enableCrossOsArchive = utils.getInputAsBool(
-            Inputs.EnableCrossOsArchive
-        );
-
-        // A caller targeting one specific bucket may not want the GitHub
-        // cache as a consolation prize. Writing there on failure reports
-        // success from the wrong destination, and lands the entry under a key
-        // that later restores will serve from GitHub — so GCS never gets it,
-        // which is the failure backfillGCS exists to undo.
-        //
-        // Defaults to true: for a repo with no GCS configured, behaving like
-        // actions/cache is the whole point of the fallback.
-        const fallbackToGitHub =
-            core.getInput(Inputs.FallbackToGitHub) === ""
-                ? true
-                : utils.getInputAsBool(Inputs.FallbackToGitHub);
-
-        cacheId = await cache.saveCache(
-            cachePaths,
-            primaryKey,
-            { uploadChunkSize: utils.getInputAsInt(Inputs.UploadChunkSize) },
-            enableCrossOsArchive,
-            fallbackToGitHub && !backfillGCS
-        );
+        cacheId = await cache.saveCache(cachePaths, primaryKey);
 
         if (cacheId != -1) {
             core.info(`Cache saved with key: ${primaryKey}`);
