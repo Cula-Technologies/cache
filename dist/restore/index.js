@@ -68610,62 +68610,72 @@ function checkFileExists(storage, bucket, path) {
 /**
  * Trust-tier derivation for the pipeline cache buckets.
  *
- * The single source of this rule. It used to live in three places — a
- * composite action in cula-platform, a `case` in the cula/checkout fork, and
- * the IAM in cula-platform-infrastructure/projects/pipeline — of which only
- * the last is enforcement. Deriving it here means no consumer configures a
- * bucket or an identity at all: set the environment once per workflow and
- * every cache step lands in the right place.
+ * The single source of this rule on the consumer side. Enforcement lives in
+ * the IAM of `projects/pipeline` in cula-platform-infrastructure; deriving it
+ * here means no consumer configures a bucket or an identity at all: set the
+ * environment once per workflow and every cache step lands in the right place.
  *
  * Getting the tier wrong fails closed rather than escalating. Each tier's
- * service account trusts only `principalSet://…/attribute.tier/<tier>`, so a
- * run asking for an identity its OIDC token does not map to is refused by
- * IAM, not silently upgraded.
+ * service account trusts only `principalSet://…/attribute.tier/<tier>` within
+ * its own pool, so a run asking for an identity its OIDC token does not map to
+ * is refused by IAM, not silently upgraded.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getTier = getTier;
 exports.getPipelineTierConfig = getPipelineTierConfig;
 /**
- * Which tiers a given tier may read, beyond its own.
- *
- * Mirrors TIERS.readsFrom in projects/pipeline, and the direction is the whole
- * point: reads go towards more-trusted tiers, never away from them. `pr` never
- * appears as a source, so nothing a pull request writes can reach a protected
- * branch's build.
+ * The tier every ref that is not a protected branch maps to. Never trusted,
+ * therefore never read by any other tier.
  */
-const READS_FROM = {
-    main: ["develop"],
-    develop: ["main"],
-    pr: ["develop", "main"]
-};
+const UNTRUSTED_TIER = "pr";
+/**
+ * cula-platform's protected branches, least to most trusted. A repository with
+ * a different branch model sets CULA_PIPELINE_TRUSTED_TIERS; this default is
+ * what the majority of callers want, so they set nothing.
+ */
+const DEFAULT_TRUSTED_TIERS = ["develop", "main"];
+/** Matches `tierSaPrefix` in projects/pipeline, whose default is the same. */
+const DEFAULT_SERVICE_ACCOUNT_PREFIX = "pipeline-tier";
+/**
+ * This repository's protected branches, least to most trusted.
+ *
+ * Mirrors `trustedTiers` in the stack that creates the buckets. The untrusted
+ * tier is filtered out rather than trusted: it is never readable, and letting a
+ * typo put it here would produce a confusing 403 from IAM — which does enforce
+ * the boundary — instead of the intended read chain.
+ */
+function getTrustedTiers() {
+    const configured = process.env["CULA_PIPELINE_TRUSTED_TIERS"];
+    const tiers = configured
+        ? configured.split(",").map(tier => tier.trim())
+        : DEFAULT_TRUSTED_TIERS;
+    return tiers.filter(tier => tier && tier !== UNTRUSTED_TIER);
+}
 /**
  * The tier this run belongs to, from its ref.
  *
  * Mirrors the `attribute.tier` mapping on the Workload Identity Federation
- * provider. Only the two protected branches map to trusted tiers; every other
- * ref — pull request merge refs, feature branches, tags — is `pr`, and a pull
- * request cannot forge a protected-branch ref in its own token.
+ * provider, which is generated from the same list. Only a protected branch maps
+ * to a trusted tier; every other ref — pull request merge refs, feature
+ * branches, tags — is the untrusted tier, and a pull request cannot forge a
+ * protected-branch ref in its own token.
  */
-function getTier(ref) {
-    var _a;
+function getTier(ref, trustedTiers) {
+    var _a, _b;
     if (ref === void 0) { ref = (_a = process.env["GITHUB_REF"]) !== null && _a !== void 0 ? _a : ""; }
-    switch (ref) {
-        case "refs/heads/main":
-            return "main";
-        case "refs/heads/develop":
-            return "develop";
-        default:
-            return "pr";
-    }
+    if (trustedTiers === void 0) { trustedTiers = getTrustedTiers(); }
+    return ((_b = trustedTiers.find(tier => ref === `refs/heads/${tier}`)) !== null && _b !== void 0 ? _b : UNTRUSTED_TIER);
 }
 /**
  * The pipeline configuration for this run, or undefined when the workflow has
  * not been wired up for the tiered buckets — in which case every caller keeps
  * whatever behaviour it had before.
  *
- * All four variables are required together. A partial set would compose a
- * half-formed bucket name, or an identity with no provider to mint it, so it
- * is treated as absent rather than guessed at.
+ * The four variables below are required together. A partial set would compose a
+ * half-formed bucket name, or an identity with no provider to mint it, so it is
+ * treated as absent rather than guessed at. The two optional ones exist so a
+ * second repository can share one GCP project: its identities cannot reuse the
+ * default prefix, and its branch model may have fewer tiers.
  */
 function getPipelineTierConfig() {
     const prefix = process.env["CULA_PIPELINE_BUCKET_PREFIX"];
@@ -68675,16 +68685,20 @@ function getPipelineTierConfig() {
     if (!prefix || !location || !project || !wifProvider) {
         return undefined;
     }
-    const tier = getTier();
-    const bucketFor = (t) => `${prefix}-${t}-cache-${location}`;
+    const serviceAccountPrefix = process.env["CULA_PIPELINE_SA_PREFIX"] ||
+        DEFAULT_SERVICE_ACCOUNT_PREFIX;
+    const trustedTiers = getTrustedTiers();
+    const tier = getTier(undefined, trustedTiers);
+    const bucketFor = (name) => `${prefix}-${name}-cache-${location}`;
     return {
         tier,
-        // Own tier leads, and that ordering is load-bearing: a save writes
-        // only the first bucket, so write-own-tier / read-upward falls out of
-        // the list itself.
-        buckets: [tier, ...READS_FROM[tier]].map(bucketFor),
+        // Own tier leads, and that ordering is load-bearing: a save writes only
+        // the first bucket, so write-own-tier / read-upward falls out of the
+        // list itself. A tier reads every trusted tier except itself — the same
+        // one-line rule the stack derives its IAM grants from.
+        buckets: [tier, ...trustedTiers.filter(name => name !== tier)].map(bucketFor),
         wifProvider,
-        serviceAccount: `pipeline-tier-${tier}@${project}.iam.gserviceaccount.com`
+        serviceAccount: `${serviceAccountPrefix}-${tier}@${project}.iam.gserviceaccount.com`
     };
 }
 
